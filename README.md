@@ -146,7 +146,8 @@ Two things worth knowing before you switch:
   `*_MODEL` variables for the agents you run (`FACT_ALIGNMENT_MODEL`,
   `MARKET_RESEARCH_MODEL`, `ACTIVITY_REPORT_MODEL`, `CS_MODEL`,
   `REPLY_DRAFT_MODEL`, `COMMAND_MODEL`, `SCHEDULE_MODEL`,
-  `AUDIT_EXTRACT_MODEL`, `AUDIT_ANALYSIS_MODEL`).
+  `AUDIT_EXTRACT_MODEL`, `AUDIT_ANALYSIS_MODEL`, and `DESIGN_MODEL` /
+  `COVER_MODEL` for the deck).
 - **Prompt caching and extended thinking are Messages-API features your
   endpoint may ignore.** A gateway that drops them still answers `200`, so the
   bill would be the only symptom — the run therefore says once, naming the
@@ -156,9 +157,10 @@ Pointing this at a provider's *own* OpenAI-shaped URL (`api.openai.com` and the
 like) does not work: those speak a different request format, so a gateway has
 to sit in between.
 
-**The sales deck is the exception.** It is Python with its own client and reads
-`design/config.json`, not these variables — set `anthropic_base` and
-`anthropic_api_key` there to move it.
+The sales deck is Python with its own client, but it follows the same
+variables: `ANTHROPIC_BASE_URL`, either key name, and `DESIGN_MODEL` /
+`COVER_MODEL` for its model ids. Its `design/config.json` keeps working and
+still wins where a variable is unset.
 
 **Turning safe mode off** is a deliberate act: set the repository variable
 `DRY_RUN` to `0`, or leave it and pass `dry_run: 0` on a single manual run to

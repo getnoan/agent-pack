@@ -86,6 +86,8 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
           ANTHROPIC_BASE_URL: ${{ vars.ANTHROPIC_BASE_URL }}
+          DESIGN_MODEL: ${{ vars.DESIGN_MODEL }}
+          COVER_MODEL: ${{ vars.COVER_MODEL }}
           DECK_CONFIG_BLOCK_SLUG: ${{ vars.DECK_CONFIG_BLOCK_SLUG }}
           DECK_PLAYBOOK_BLOCK_SLUG: ${{ vars.DECK_PLAYBOOK_BLOCK_SLUG }}
           DECK_BUCKET: ${{ vars.DECK_BUCKET }}
