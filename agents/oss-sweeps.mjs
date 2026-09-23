@@ -73,17 +73,33 @@ export const DESIGN_FILES = [
  *  One list, in the module that ships, so the exporter and the sweeps cannot disagree. */
 export const SHIPPED_TOOLS = ["grounding-check.mjs", "oss-sweeps.mjs"];
 
+/** The data files the agents read at run time. Here for the reason SHIPPED_TESTS, DESIGN_FILES
+ *  and SHIPPED_TOOLS are here: the exporter needs the list (as ASSETS, pre-flighted so a missing
+ *  one aborts the export) and so does the shipped sweep, and the exporter does not ship — so the
+ *  shipped copy could not import it from there. Written out twice it drifts silently, and the
+ *  drift that matters is a file the exporter ships and the sweep does not know to open. */
+export const SHIPPED_ASSETS = ["comment-grammar.json", "agent-comment-marker.json"];
+
 export const SHIPPED_TESTS = [
   "test-fleet-env.mjs", "test-generic-config.mjs", "test-optional-lane.mjs", "test-grounding-check.mjs",
   "test-commander-auth.mjs", "test-contact-email-lookup.mjs", "test-contact-memos-order.mjs",
   "test-noan-getall-filters.mjs", "test-resend-env-guard.mjs", "test-support-scan.mjs",
   "test-fact-alignment-notes-scan.mjs", "test-fact-alignment-capture-intake.mjs",
   "test-weekly-report-memos.mjs", "test-weekly-report-notes-section.mjs",
+  "test-llm-endpoint-config.mjs",
 ];
 
+/** Pointers into private history that mean nothing to a stranger, WITHOUT the id half.
+ *  Split out because the readers differ. A comment sweep wants both halves; the shipped-test
+ *  sweep runs ids separately, with the synthetic-fixture exemption — `aaaaaaaa-aaaa-4aaa-8aaa-…`
+ *  is a legal fixture and must not read as a pointer — and a data file gets the same treatment.
+ *
+ *  ONE source, spliced into both, for the reason UUID is spliced rather than written twice:
+ *  the copies drift, and the weaker of the two is always the one that ships. */
+const POINTERS = String.raw`(?<![\w:;#])#\d{3,4}\b(?![0-9a-fA-F;'"])|fleet loop task|\b[A-Z][A-Z0-9-]+-PLAN\.md\b|VERITY-AGENT-STANDARD|AGENT-IDENTITY-STANDARD|\b(?:notes?|tasks?) [0-9a-f]{8}\b|getnoan\/[a-z-]+#\d+|\bcommit [0-9a-f]{7,40}\b|\(\s*[0-9a-f]{7,40}\s*\)`;
+export const PRIVATE_POINTER_NO_ID = new RegExp(POINTERS);
 /** Pointers into private history that mean nothing to a stranger. */
-export const PRIVATE_POINTER = new RegExp(
-  String.raw`(?<![\w:;#])#\d{3,4}\b(?![0-9a-fA-F;'"])|fleet loop task|\b[A-Z][A-Z0-9-]+-PLAN\.md\b|VERITY-AGENT-STANDARD|AGENT-IDENTITY-STANDARD|\b(?:notes?|tasks?) [0-9a-f]{8}\b|getnoan\/[a-z-]+#\d+|\bcommit [0-9a-f]{7,40}\b|\(\s*[0-9a-f]{7,40}\s*\)|` + UUID);
+export const PRIVATE_POINTER = new RegExp(POINTERS + "|" + UUID);
 
 /** A contact create that bypasses createContact(). Lives here, not in a test, because TWO
  *  readers need it: test-contact-create-409.mjs upstream, which also reads fleet-only paths
@@ -155,6 +171,29 @@ export function sweepProse(name, src, { pointers = false, shipped = null } = {})
     for (const ref of unshippedRefs(text, shipped)) {
       out.push(`${name}:${line} unshipped ${ref} — ${text.trim().slice(0, 80)}`);
     }
+  }
+  return out;
+}
+
+/** Data files the agents read at run time (JSON). Nothing swept them, and the hole is
+ *  structural rather than a missing pattern: sweepProse reads comments, and a .json has no
+ *  comment syntax; sweepCode reads comment-stripped SOURCE, which a .json is not. So
+ *  `comment-grammar.json` carried a fleet task pointer in its `_readme` array straight through
+ *  the first public export, with `fleet loop task` already in PRIVATE_POINTER and matching it.
+ *
+ *  Every line is content here, so there is no comment/code split to make — one pass, both
+ *  halves' patterns. Deliberately NOT extended to README.md / SECURITY.md: those are
+ *  DOWNSTREAM_OWNED, written by and for the pack's publisher, and naming that publisher (and
+ *  carrying its security contact) is the whole point of them. */
+export function sweepData(name, src) {
+  const out = [];
+  for (const [i, line] of src.split("\n").entries()) {
+    const p = line.match(PRIVATE_POINTER_NO_ID);
+    if (p) out.push(`${name}:${i + 1} pointer ${p[0].trim()} — ${line.trim().slice(0, 80)}`);
+    for (const u of line.match(WORKSPACE_ID) || []) if (!SYNTHETIC_ID.test(u)) out.push(`${name}:${i + 1} workspace id ${u}`);
+    for (const a of line.match(ADDRESS) || []) if (!RESERVED.test(a)) out.push(`${name}:${i + 1} address ${a}`);
+    const pr = line.match(PROSE);
+    if (pr) out.push(`${name}:${i + 1} ${pr[0]} — ${line.trim().slice(0, 80)}`);
   }
   return out;
 }

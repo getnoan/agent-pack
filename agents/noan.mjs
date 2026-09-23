@@ -190,12 +190,37 @@ export function hasNextPage(res) {
   return !!res?.links?.next;
 }
 
+/** Retry budget for ONE page of a paginated read. Deliberately larger than call()'s
+ *  default of 4 (2+4+8+15s ≈ 29s), which is tuned for a single request — and a sweep
+ *  is not a single request. noanGetAll("/contacts") is ~70 of them back to back,
+ *  because the union passes at 100/75/50/25 always run in full there (the first pass
+ *  never reaches meta.totalItems on that endpoint, which is the whole reason the union
+ *  exists). A burst that size can rate-limit itself.
+ *
+ *  On 2026-09-23 it did. The reply worker's hourly sweep landed inside the Wednesday
+ *  weekly-activity-report run — the fleet's other heavy /contacts reader, two full
+ *  unions of its own plus tasks/facts/blocks/stacks/notes/assets — and died on
+ *  `/contacts?per_page=50&page=4` with `429 after 4 retries`: 29s of backoff was not
+ *  enough to outlast the throttle, and the throw took down a worker that had already
+ *  established there was no inbound mail to handle (run 35827705147).
+ *
+ *  Note what is NOT the fix: moving the cron. reply-worker fires at :13, and Actions
+ *  schedule drift on it measured +6 to +42 min over 20 consecutive runs, so it starts
+ *  anywhere in the hour regardless of what the cron says. Collisions cannot be
+ *  scheduled away; they have to be survived.
+ *
+ *  8 gives ~89s (2+4+8+15+15+15+15+15). READS ONLY — writes keep the tight budget on
+ *  purpose: a write that cannot land should say so promptly rather than hold a run open
+ *  on a retry ladder. The job timeout is the backstop for NOAN being down rather than
+ *  merely busy. */
+export const SWEEP_RETRIES = 8;
+
 async function sweepOnce(path) {
   const items = [];
   let totalItems = null;
   const startPage = parseInt((path.match(/[?&]page=(\d+)/) || [])[1] || "1", 10) || 1;
   for (let page = startPage, guard = 0; guard < 50; page++, guard++) {
-    const res = await call("GET", pageUrl(path, page));
+    const res = await call("GET", pageUrl(path, page), null, { retries: SWEEP_RETRIES });
     if (totalItems == null && typeof res?.meta?.totalItems === "number") totalItems = res.meta.totalItems;
     items.push(...(res?.items || []));
     if (!hasNextPage(res)) break;

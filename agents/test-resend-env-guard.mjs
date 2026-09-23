@@ -5,9 +5,9 @@
  *
  * Why: resend.mjs used to read the key once at import and send whatever it
  * held. Unset, that was `Authorization: Bearer undefined`, and Resend answered
- * 401 "invalid API key" — byte-for-byte the message a revoked key produces. The
- * Slack companion's hand-built Render service shipped without the variable on
- * 2026-08-31 and reported a bad key for nine days while the key was fine, the
+ * 401 "invalid API key" — byte-for-byte the message a revoked key produces. A
+ * hand-built companion service shipped without the variable on 2026-08-31 and
+ * reported a bad key for nine days while the key was fine, the
  * Actions fleet kept sending with it, and the Resend dashboard showed nothing
  * (unauthenticated requests are not logged). The delivery-stats tool had the
  * same hole: fetchEmailStatus produced 50/50 "lookup_failed", which read as a
@@ -51,7 +51,7 @@ m = await msg(() => fetchEmailStatus("em_x"));
 ok("fetchEmailStatus without RESEND_API_KEY throws the same named error", /RESEND_API_KEY is not set/.test(m || ""), m);
 ok("…and no request was made", calls === 0, `fetch called ${calls}×`);
 
-// --- key present, from missing (the second thing the Render service lacked) --
+// --- key present, from missing (the second thing that service lacked) --
 process.env.RESEND_API_KEY = "re_test_not_a_real_key";
 m = await msg(() => sendEmail(args));
 ok("sendEmail with a key but no MAIL_FROM names MAIL_FROM", /MAIL_FROM is not set/.test(m || ""), m);

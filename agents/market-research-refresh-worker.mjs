@@ -49,6 +49,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 import { noanGet, noanGetAll, noanPost, assertNoanKey, postNote } from "./noan.mjs";
+import { assertModelKey } from "./anthropic.mjs";
 import { sendReportEmail } from "./resend.mjs";
 import { renderReportEmailHtml } from "./markdown-email.mjs";
 import { planResearch, draftBlocks, renderReport } from "./market-research-refresh-agent.mjs";
@@ -305,7 +306,9 @@ async function main() {
   // with neither, so naming the shared key here would reject a correctly configured
   // per-category run — and it is why the shared key had to stay in every workflow env block.
   assertNoanKey();
-  ["ANTHROPIC_API_KEY", "RESEND_API_KEY", "MAIL_FROM", "FIRECRAWL_API_KEY",
+  // Either model-key name satisfies this; see assertModelKey.
+  assertModelKey();
+  ["RESEND_API_KEY", "MAIL_FROM", "FIRECRAWL_API_KEY",
    "MARKET_RESEARCH_CONFIG_BLOCK_SLUG", "MARKET_RESEARCH_PLAYBOOK_BLOCK_SLUG"].forEach(required);
 
   log(`Market research refresh starting${DRY_RUN ? " (DRY-RUN)" : ""}`);
