@@ -1,0 +1,96 @@
+# TEMPLATE for a new agent's workflow. Copy to .github/workflows/<agent>.yml and:
+#   1. replace YOUR-AGENT / your-agent (the name, the concurrency group, the worker path),
+#   2. list, in the Configured? step, exactly the secrets this agent cannot run without
+#      (both in `env:` and in the `for name in` line), and forward its own block slugs
+#      and any extra variable under Run;
+#   3. keep the safe-mode lines exactly as they are — ci.yml greps for them.
+#
+# Two contracts live in this file and the setup wizard reads both:
+#   - the guard prints `not configured yet: NAME`, one line per missing secret, and the
+#     job stays green with nothing run;
+#   - DRY_RUN defaults to "1" (the dispatch input) and falls back to '1' (the variable).
+name: YOUR-AGENT
+
+on:
+  schedule:
+    - cron: "17 6 * * 1"   # pick a minute that is not :00 — GitHub delays the busy ones
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "1 = show what would happen and write nothing. Leave at 1 until you have read a dry run."
+        required: false
+        default: "1"
+
+concurrency:
+  group: your-agent
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      # A fork that enabled Actions before adding its secrets must not fail with
+      # a stack trace on every cron tick. GitHub renders a missing secret as an
+      # empty string, so each one is read through env (never interpolated into
+      # the script) and, if any is empty, the run says which and stops: green,
+      # nothing ran. The "not configured yet: NAME" line is a stable format on
+      # purpose — the setup wizard reads it to report which agents are ready.
+      - name: Configured?
+        id: configured
+        env:
+          NOAN_PERSONAL_API_KEY: ${{ secrets.NOAN_PERSONAL_API_KEY }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          ready=1
+          for name in NOAN_PERSONAL_API_KEY RESEND_API_KEY ANTHROPIC_API_KEY DATABASE_URL; do
+            if [ -z "${!name}" ]; then
+              echo "not configured yet: $name"
+              ready=0
+            fi
+          done
+          if [ "$ready" = 0 ]; then
+            echo "::notice::This repository is not configured yet. Add the secrets named above under Settings → Secrets and variables → Actions. Nothing ran."
+          fi
+          echo "ready=$ready" >> "$GITHUB_OUTPUT"
+      - name: Run
+        if: steps.configured.outputs.ready == '1'
+        run: node agents/your-agent-worker.mjs
+        env:
+          # Who the agents are — see .env.example; unset means the cautious default.
+          AGENT_NAME: ${{ vars.AGENT_NAME }}
+          AGENT_PRONOUNS: ${{ vars.AGENT_PRONOUNS }}
+          COMPANY_NAME: ${{ vars.COMPANY_NAME }}
+          AGENT_IDENTITY_IDS: ${{ vars.AGENT_IDENTITY_IDS }}
+          COMMANDERS: ${{ vars.COMMANDERS }}
+          TEAMMATE_DOMAIN: ${{ vars.TEAMMATE_DOMAIN }}
+          AGENT_ALLOWED_LINKS: ${{ vars.AGENT_ALLOWED_LINKS }}
+          EMAIL_WORDMARK_URL: ${{ vars.EMAIL_WORDMARK_URL }}
+          EMAIL_FONTS_URL: ${{ vars.EMAIL_FONTS_URL }}
+          SCHEDULE_TIMEZONE: ${{ vars.SCHEDULE_TIMEZONE }}
+          REPORT_RECIPIENT_TAG: ${{ vars.REPORT_RECIPIENT_TAG }}
+          # The baseline
+          NOAN_PERSONAL_API_KEY: ${{ secrets.NOAN_PERSONAL_API_KEY }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          MAIL_FROM: ${{ vars.MAIL_FROM }}
+          REPLY_TO: ${{ vars.REPLY_TO }}
+          STATE_BACKEND: ${{ vars.STATE_BACKEND || 'postgres' }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DRY_RUN: ${{ github.event.inputs.dry_run || vars.DRY_RUN || '1' }}
+          # This agent's own: the two slugs its seed script prints, plus any extra
+          YOUR_AGENT_CONFIG_BLOCK_SLUG: ${{ vars.YOUR_AGENT_CONFIG_BLOCK_SLUG }}
+          YOUR_AGENT_PLAYBOOK_BLOCK_SLUG: ${{ vars.YOUR_AGENT_PLAYBOOK_BLOCK_SLUG }}
+          # Documented in .env.example and forwarded by SOME workflows: uncomment what this agent reads.
+          # ESCALATE_TO: ${{ vars.ESCALATE_TO }}            # if this agent escalates to a human
+          # TEST_RECIPIENT: ${{ vars.TEST_RECIPIENT }}      # if it sends mail you want redirected while tuning
+          # FIRECRAWL_API_KEY: ${{ secrets.FIRECRAWL_API_KEY }}  # if it reads the web (then add it to the Configured? list)

@@ -1,0 +1,39 @@
+{
+  "_README": "Copy to config.json and fill in. Addresses and identity ids have NO defaults in code: an unset one stops the run and names the key, rather than quietly picking someone. Block slugs are printed by the seed scripts in agents/. company_name and agent_name default to your NOAN project's name and \"Agent\"; agent_identity_ids are the NOAN identity ids the agent runs as.",
+  "noan_base": "https://api.getnoan.com/v1",
+  "anthropic_base": "https://api.anthropic.com/v1",
+  "design_model": "claude-opus-4-8",
+  "deck_email_from": "",
+  "deck_email_to": "",
+  "deck_reply_to": "",
+  "deck_fact_slugs": {
+    "visual": "brand-identity",
+    "value": [
+      "brand-tone",
+      "brand-positioning",
+      "value-proposition",
+      "ideal-customer",
+      "sales-customer-profile"
+    ],
+    "design_system": "",
+    "config": "",
+    "playbook": ""
+  },
+  "chrome_path": "",
+  "render_png": true,
+  "canvas": {
+    "width": 1080,
+    "height": 1350
+  },
+  "deck_drive_dir": "",
+  "deck_marker": "[deck]",
+  "deck_trigger_tag": "Deck",
+  "deck_park_on_review": true,
+  "deck_confidence_gate": false,
+  "mark_done_after_send": true,
+  "subscribe_url": "",
+  "demo_url": "",
+  "agent_identity_ids": [],
+  "company_name": "",
+  "agent_name": ""
+}

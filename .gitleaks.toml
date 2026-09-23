@@ -1,0 +1,27 @@
+# Secret scanning for this repo. Runs in CI on every push and pull request.
+# Nothing in this repository should ever contain a live credential: every key
+# is supplied by the operator through environment variables at run time.
+title = "agent-pack"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "noan-personal-api-key"
+description = "NOAN personal API key"
+regex = '''npak_[A-Za-z0-9]{16,}'''
+tags = ["noan", "key"]
+
+[[rules]]
+id = "postgres-connection-url"
+description = "Postgres connection string with an inline password"
+regex = '''postgres(ql)?://[^:\s]+:[^@\s]+@'''
+tags = ["database"]
+
+[allowlist]
+description = "Documentation placeholders"
+regexes = [
+  '''npak_\.\.\.''',
+  '''npak_your''',
+  '''postgres(ql)?://user:password@''',
+]

@@ -1,0 +1,73 @@
+{
+  "_readme": [
+    "The fleet's one comment grammar: what a teammate's comment on a task ASKS FOR.",
+    "Compiled by agents/comment-grammar.mjs and design/comment_grammar.py from these",
+    "very strings, so the two languages cannot drift — they did (fleet loop task",
+    "on 2026-09-11, five of sixteen real phrases were read differently by",
+    "the deck (Python) and the demo/SDR (JS) classifiers, and the dangerous direction",
+    "was the silent no-op — 'send as-is' on a parked demo meant nothing was sent while",
+    "the writer believed they had approved it.",
+    "",
+    "Patterns use only syntax both engines read identically: (?:...), \\s, \\b, [\\s\\S].",
+    "No named groups, no lookbehind, no \\d{2,} quantifier tricks. Each is matched",
+    "against the WHOLE comment (anchored ^...$), which is what stops \"don't send yet\"",
+    "matching \"send\". Adding a verb is a change to this file plus a fixture.",
+    "",
+    "Order matters: send, then send_with_text, then retry; anything else is steer."
+  ],
+
+  "verbs": {
+    "send": {
+      "means": "Ship the parked thing as it stands — the deck, the demo video, the drafted reply.",
+      "pattern": "^\\s*(?:yes[,.!]?\\s*)?(?:please\\s+)?(?:send(?:\\s+(?:this|it))?(?:\\s+as[\\s-]?is)?|approve[d]?|go\\s+ahead|ship\\s+it|ok(?:ay)?\\s+to\\s+send)\\s*[.!]*\\s*$",
+      "payload": null
+    },
+    "send_with_text": {
+      "means": "Ship it, but with the human's own words as the cover note or reply body — used verbatim, never re-drafted.",
+      "pattern": "^\\s*(?:send|reply)\\s*:\\s*([\\s\\S]+?)\\s*$",
+      "payload": 1
+    },
+    "retry": {
+      "means": "Rebuild it. The text after the verb, when there is any, is the guidance for the rebuild.",
+      "pattern": "^\\s*(?:please\\s+)?(?:retry|rebuild|regenerate|redo|re-?run|try\\s+again|again)\\b[\\s:,.!-]*([\\s\\S]*?)\\s*$",
+      "payload": 1
+    }
+  },
+
+  "fallback": {
+    "verb": "steer",
+    "means": "Anything else a teammate wrote: context for the next attempt, never an instruction to send. The whole comment is the payload."
+  },
+
+  "fixtures": [
+    { "text": "send", "verb": "send", "payload": null },
+    { "text": "Send it!", "verb": "send", "payload": null },
+    { "text": "send it", "verb": "send", "payload": null },
+    { "text": "send as-is", "verb": "send", "payload": null, "note": "Python-only until 2026-09-11" },
+    { "text": "send it as is", "verb": "send", "payload": null, "note": "Python-only until 2026-09-11" },
+    { "text": "yes, send", "verb": "send", "payload": null },
+    { "text": "please send this", "verb": "send", "payload": null },
+    { "text": "approve", "verb": "send", "payload": null },
+    { "text": "approved.", "verb": "send", "payload": null },
+    { "text": "go ahead", "verb": "send", "payload": null },
+    { "text": "ship it", "verb": "send", "payload": null },
+    { "text": "ok to send", "verb": "send", "payload": null },
+    { "text": "send: Hi Sam, here is the walkthrough I promised.", "verb": "send_with_text", "payload": "Hi Sam, here is the walkthrough I promised." },
+    { "text": "reply: Hi Sam.", "verb": "send_with_text", "payload": "Hi Sam.", "note": "JS-only until 2026-09-11" },
+    { "text": "send:   spaced   ", "verb": "send_with_text", "payload": "spaced" },
+    { "text": "retry", "verb": "retry", "payload": "" },
+    { "text": "retry: lead with the task board scene", "verb": "retry", "payload": "lead with the task board scene" },
+    { "text": "rebuild shorter", "verb": "retry", "payload": "shorter" },
+    { "text": "regenerate with the board scene", "verb": "retry", "payload": "with the board scene", "note": "JS-only until 2026-09-11" },
+    { "text": "redo it", "verb": "retry", "payload": "it", "note": "JS-only until 2026-09-11" },
+    { "text": "re-run", "verb": "retry", "payload": "" },
+    { "text": "try again", "verb": "retry", "payload": "" },
+    { "text": "don't send yet", "verb": "steer", "payload": "don't send yet", "note": "the whole-comment anchor is what stops this matching send" },
+    { "text": "do not send this to them", "verb": "steer", "payload": "do not send this to them" },
+    { "text": "waiting on Ivan to confirm his address", "verb": "steer", "payload": "waiting on Ivan to confirm his address" },
+    { "text": "use the other email address", "verb": "steer", "payload": "use the other email address" },
+    { "text": "I sent it by hand", "verb": "steer", "payload": "I sent it by hand" },
+    { "text": "", "verb": "steer", "payload": "" },
+    { "text": "   ", "verb": "steer", "payload": "" }
+  ]
+}
