@@ -94,9 +94,20 @@ export const SHIPPED_TESTS = [
  *  sweep runs ids separately, with the synthetic-fixture exemption — `aaaaaaaa-aaaa-4aaa-8aaa-…`
  *  is a legal fixture and must not read as a pointer — and a data file gets the same treatment.
  *
+ *  `run|job <digits>` is there because a CI run id is a pointer into private history like any
+ *  other, and the existing alternatives all missed it: `commit <sha>` needs the word commit,
+ *  and `(<hex>)` needs the parens to hold ONLY the hex, so the parenthesised `run <id>` form
+ *  matched neither. Two such ids reached the public pack before this was added. Measured across
+ *  all 727 agents/*.mjs: 12 matches, every one a real run id, no false positive.
+ *
+ *  Written without an example id ON PURPOSE. This file is exempt from its own sweeps by name
+ *  (see sweepCode/sweepProse), because it necessarily spells the patterns out — which means
+ *  nothing checks it, and an id quoted here ships exactly as far as the one it was removed
+ *  from. Illustrate a pattern with its SHAPE, never with a real value.
+ *
  *  ONE source, spliced into both, for the reason UUID is spliced rather than written twice:
  *  the copies drift, and the weaker of the two is always the one that ships. */
-const POINTERS = String.raw`(?<![\w:;#])#\d{3,4}\b(?![0-9a-fA-F;'"])|fleet loop task|\b[A-Z][A-Z0-9-]+-PLAN\.md\b|VERITY-AGENT-STANDARD|AGENT-IDENTITY-STANDARD|\b(?:notes?|tasks?) [0-9a-f]{8}\b|getnoan\/[a-z-]+#\d+|\bcommit [0-9a-f]{7,40}\b|\(\s*[0-9a-f]{7,40}\s*\)`;
+const POINTERS = String.raw`(?<![\w:;#])#\d{3,4}\b(?![0-9a-fA-F;'"])|fleet loop task|\b(?:run|job) [0-9]{6,}\b|\b[A-Z][A-Z0-9-]+-PLAN\.md\b|VERITY-AGENT-STANDARD|AGENT-IDENTITY-STANDARD|\b(?:notes?|tasks?) [0-9a-f]{8}\b|getnoan\/[a-z-]+#\d+|\bcommit [0-9a-f]{7,40}\b|\(\s*[0-9a-f]{7,40}\s*\)`;
 export const PRIVATE_POINTER_NO_ID = new RegExp(POINTERS);
 /** Pointers into private history that mean nothing to a stranger. */
 export const PRIVATE_POINTER = new RegExp(POINTERS + "|" + UUID);

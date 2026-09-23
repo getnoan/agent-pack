@@ -262,6 +262,10 @@ const SHIPPED = new Set([...closure, ...DESIGN_PY.map(f => path.basename(f)), ..
 // citations of a private plan doc shipped — named here verbatim until the shipped-test sweep
 // above started reading this file too. Measured at zero hits before switching it on, so this
 // pins the tree where it is rather than papering over a backlog.
+// The `run|job <digits>` alternative was added later, on the same terms: measured at 3 hits in
+// shipped code first (two of which had already reached the public pack, because no existing
+// alternative matched the parenthesised `run <id>` form), those three cleaned, then switched
+// on at zero.
 for (const f of [...[...closure].sort().map(f => path.join(FLEET, f)), ...DESIGN_PY]) prose.push(...sweepProse(path.basename(f), readFileSync(f, "utf8"), { shipped: SHIPPED, pointers: true }));
 const unshipped = prose.filter(p => / unshipped /.test(p));
 const strictProse = prose.filter(p => !/ unshipped /.test(p));

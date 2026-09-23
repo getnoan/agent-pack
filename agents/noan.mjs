@@ -202,7 +202,7 @@ export function hasNextPage(res) {
  *  unions of its own plus tasks/facts/blocks/stacks/notes/assets — and died on
  *  `/contacts?per_page=50&page=4` with `429 after 4 retries`: 29s of backoff was not
  *  enough to outlast the throttle, and the throw took down a worker that had already
- *  established there was no inbound mail to handle (run 35827705147).
+ *  established there was no inbound mail to handle.
  *
  *  Note what is NOT the fix: moving the cron. reply-worker fires at :13, and Actions
  *  schedule drift on it measured +6 to +42 min over 20 consecutive runs, so it starts
@@ -283,7 +283,7 @@ export async function noanGetAll(path, { strict = false } = {}) {
  *  the project CLAUDE.md points the other way, recommending `POST /notes` with "the full
  *  detail" as the escape hatch for the 2048-char cap on a task's `details`.
  *
- *  This bit the weekly activity report on 2026-09-02 (run 33599851550). A backlog purge closed
+ *  This bit the weekly activity report on 2026-09-02. A backlog purge closed
  *  283 long-stale tasks in four minutes, the report enumerated all 355 completions, and the
  *  body came to 25,136 characters. The run died — and it died at the LAST step, after the model
  *  synthesis had already been paid for, so the retry cost the full generation again.
