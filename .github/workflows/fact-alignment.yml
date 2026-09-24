@@ -39,11 +39,18 @@ jobs:
           NOAN_PERSONAL_API_KEY: ${{ secrets.NOAN_PERSONAL_API_KEY }}
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: |
           ready=1
-          for name in NOAN_PERSONAL_API_KEY RESEND_API_KEY ANTHROPIC_API_KEY DATABASE_URL; do
+          # The model key has two accepted names: ANTHROPIC_API_KEY, or LLM_API_KEY when your
+          # endpoint is not Anthropic (see ANTHROPIC_BASE_URL). MODEL_KEY collapses them to one
+          # presence check so the list below stays a list. ANTHROPIC_API_KEY is the name
+          # REPORTED when neither is set: it is the canonical one, and the wizard reads this line.
+          MODEL_KEY="${ANTHROPIC_API_KEY:-$LLM_API_KEY}"
+          for name in NOAN_PERSONAL_API_KEY RESEND_API_KEY MODEL_KEY DATABASE_URL; do
             if [ -z "${!name}" ]; then
+              case "$name" in MODEL_KEY) name=ANTHROPIC_API_KEY ;; esac
               echo "not configured yet: $name"
               ready=0
             fi
@@ -76,5 +83,10 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           DRY_RUN: ${{ github.event.inputs.dry_run || vars.DRY_RUN || '1' }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          ANTHROPIC_BASE_URL: ${{ vars.ANTHROPIC_BASE_URL }}
+          FACT_ALIGNMENT_MODEL: ${{ vars.FACT_ALIGNMENT_MODEL }}
+          AUDIT_EXTRACT_MODEL: ${{ vars.AUDIT_EXTRACT_MODEL }}
+          AUDIT_ANALYSIS_MODEL: ${{ vars.AUDIT_ANALYSIS_MODEL }}
           FACT_ALIGNMENT_CONFIG_BLOCK_SLUG: ${{ vars.FACT_ALIGNMENT_CONFIG_BLOCK_SLUG }}
           FACT_ALIGNMENT_PLAYBOOK_BLOCK_SLUG: ${{ vars.FACT_ALIGNMENT_PLAYBOOK_BLOCK_SLUG }}

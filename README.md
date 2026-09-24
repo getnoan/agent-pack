@@ -27,8 +27,9 @@ not a configuration convenience bolted on the side; it is the whole idea.
 | **sales deck** | Builds a personalised deck for a named prospect, renders a PDF, sends it or parks it for approval | headless Chrome, object storage |
 | **newsletter** | Sends a NOAN asset to every contact carrying a tag, exactly once each | — |
 
-Baseline for everything: a NOAN API key, an Anthropic API key, and a Resend
-API key for email.
+Baseline for everything: a NOAN API key, a key for whichever model you want
+answering, and a Resend API key for email. The model does not have to be
+Anthropic's — see *Which model answers* below.
 
 ## Start here
 
@@ -109,19 +110,57 @@ nothing run — until the secrets are there.
 |---|---|
 | `NOAN_PERSONAL_API_KEY` | every agent |
 | `RESEND_API_KEY` | every agent |
-| `ANTHROPIC_API_KEY` | every agent except the newsletter |
+| `ANTHROPIC_API_KEY` **or** `LLM_API_KEY` | every agent except the newsletter — either name works, see *Which model answers* |
 | `DATABASE_URL` | every agent except market research |
 | `FIRECRAWL_API_KEY` | market research |
 | `NEWSLETTER_UNSUB_SECRET` | newsletter |
 | `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` | sales deck, only if you want send-later |
 
 **Variables** (plain configuration): `MAIL_FROM`, `REPLY_TO`, `ESCALATE_TO`,
-`STATE_BACKEND`, the block slugs each seed script prints when you run it, and
+`STATE_BACKEND`, `ANTHROPIC_BASE_URL` and the `*_MODEL` ids (see *Which model
+answers*), the block slugs each seed script prints when you run it, and
 the identity set under *Whose agents these are* below: `AGENT_NAME`,
 `COMPANY_NAME`, `AGENT_IDENTITY_IDS`, `COMMANDERS`, `TEAMMATE_DOMAIN`,
 `AGENT_ALLOWED_LINKS`, `REPORT_RECIPIENT_TAG`, plus `MARKET_RESEARCH_STACK_SLUG`
 for market research. Every workflow forwards them; leave one unset and that
 agent takes the cautious default.
+
+### Which model answers
+
+The agents speak the Anthropic Messages wire format, and `ANTHROPIC_BASE_URL`
+points that at whoever you like. You are not tied to one vendor's billing.
+
+| You want | Set |
+|---|---|
+| Anthropic | nothing — this is the default |
+| OpenRouter (no proxy to run) | `ANTHROPIC_BASE_URL=https://openrouter.ai/api`, `LLM_API_KEY=<key>`, and the `*_MODEL` ids it knows |
+| Your own gateway | `ANTHROPIC_BASE_URL=http://your-gateway`, e.g. LiteLLM, which translates to OpenAI, Gemini, Bedrock or Azure |
+
+`ANTHROPIC_API_KEY` stays canonical and unchanged; `LLM_API_KEY` is the same
+requirement under a name that is not a lie when your endpoint is not Anthropic.
+Either satisfies every agent and the configured-check.
+
+Two things worth knowing before you switch:
+
+- **The `claude-*` model defaults will not resolve elsewhere.** Set the
+  `*_MODEL` variables for the agents you run (`FACT_ALIGNMENT_MODEL`,
+  `MARKET_RESEARCH_MODEL`, `ACTIVITY_REPORT_MODEL`, `CS_MODEL`,
+  `REPLY_DRAFT_MODEL`, `COMMAND_MODEL`, `SCHEDULE_MODEL`,
+  `AUDIT_EXTRACT_MODEL`, `AUDIT_ANALYSIS_MODEL`, and `DESIGN_MODEL` /
+  `COVER_MODEL` for the deck).
+- **Prompt caching and extended thinking are Messages-API features your
+  endpoint may ignore.** A gateway that drops them still answers `200`, so the
+  bill would be the only symptom — the run therefore says once, naming the
+  host, that they are unverified there.
+
+Pointing this at a provider's *own* OpenAI-shaped URL (`api.openai.com` and the
+like) does not work: those speak a different request format, so a gateway has
+to sit in between.
+
+The sales deck is Python with its own client, but it follows the same
+variables: `ANTHROPIC_BASE_URL`, either key name, and `DESIGN_MODEL` /
+`COVER_MODEL` for its model ids. Its `design/config.json` keeps working and
+still wins where a variable is unset.
 
 **Turning safe mode off** is a deliberate act: set the repository variable
 `DRY_RUN` to `0`, or leave it and pass `dry_run: 0` on a single manual run to
