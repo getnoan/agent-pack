@@ -42,14 +42,17 @@ dry run. Safe mode stays on; the switch is yours.
 npx -y @getnoan/wizard@latest --agents
 ```
 
+Use wizard 0.1.5 or later (`@latest` is): earlier versions look for the seed scripts
+where they used to live, before `agents/` was grouped by agent, and seed nothing.
+
 **By hand, run the market research agent first.** It is the only one that needs no
 database, so you can watch an agent do real work before setting anything else
 up. Three keys and you are going.
 
 ```bash
 cp .env.example .env      # add your three keys
-node agents/seed-market-research-refresh.mjs
-DRY_RUN=1 node agents/market-research-refresh-worker.mjs
+node --env-file=.env agents/market-research-refresh/seed-market-research-refresh.mjs
+DRY_RUN=1 node --env-file=.env agents/market-research-refresh/market-research-refresh-worker.mjs
 ```
 
 The seed script writes that agent's starter instructions into your NOAN
@@ -57,6 +60,28 @@ project and prints the two `.env` lines to add. The worker then shows you
 exactly what it would post, without posting anything.
 
 When you are happy, drop `DRY_RUN=1`.
+
+### Where things are
+
+Each agent has a folder under `agents/` holding its worker, its seed script and
+its tests. Code that two or more agents use lives in `agents/shared/`:
+the NOAN client, email, Slack, state and the model client.
+
+```
+agents/
+  customer-support/         reply-worker.mjs and the support, scheduling and command lanes
+  fact-alignment/
+  market-research-refresh/  including scripts/ (the Firecrawl search and scrape helpers)
+  newsletter/
+  weekly-activity-report/
+  sales-deck/               its seed script; the deck itself is Python, in design/
+  shared/
+  pack-layout.json          which file is where, generated
+design/                     the sales deck
+```
+
+The grouping is generated, not curated. When a second agent starts using a
+module, the next export moves it to `shared/`.
 
 ## Safe mode
 
@@ -167,9 +192,10 @@ still wins where a variable is unset.
 try one agent live. CI enforces that every agent workflow still defaults to
 safe mode, so it cannot be switched off for everyone by accident.
 
-Adding an agent of your own? Copy `templates/agent-workflow.yml`: it carries the
-configured-check, the safe-mode default CI enforces, and the identity variables
-already forwarded, so only the secrets list, the worker path and the slugs change.
+Adding an agent of your own? Give it a folder, `agents/<your-agent>/`, and import
+what it shares with the others from `../shared/`. Then copy `templates/agent-workflow.yml`:
+it carries the configured-check, the safe-mode default CI enforces, and the identity
+variables already forwarded, so only the secrets list, the worker path and the slugs change.
 
 Two workflows are not agents. **Keepalive** touches your database every three
 days so a free-tier project is not paused for inactivity — delete it if your
@@ -217,7 +243,7 @@ and why, and never files the same one twice.
 Run the check by hand at any time:
 
 ```bash
-node --env-file=.env agents/grounding-check.mjs --dry-run
+node --env-file=.env agents/shared/grounding-check.mjs --dry-run
 ```
 
 Drop `--dry-run` to file the tasks. The NOAN skill's first-connect procedure fills

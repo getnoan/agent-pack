@@ -38,16 +38,27 @@ jobs:
       # The tests that travel with the export. They assert the client contract
       # the agents actually run against, and the exported copy is the one that
       # ships — so upstream passing says nothing about this tree.
+      #
+      # agents/ is grouped by agent (agents/<agent>/, agents/shared/), so the tests sit one
+      # folder down, and each runs from its own folder. A test a fork adds directly in agents/
+      # is still picked up. Finding none is fine only in a tree that has no export yet: once
+      # agents/pack-layout.json exists, an empty loop means the glob no longer matches the
+      # layout, and a green run would be checking nothing.
       - name: Unit tests
-        working-directory: agents
         run: |
-          failed=""
-          for t in test-*.mjs; do
-            [ -e "$t" ] || { echo "no tests in this tree yet"; break; }
-            if node "$t" > /tmp/test-out.txt 2>&1; then echo "ok   $t"
+          failed=""; found=0
+          for t in agents/test-*.mjs agents/*/test-*.mjs; do
+            [ -e "$t" ] || continue
+            found=$((found + 1))
+            if (cd "$(dirname "$t")" && node "$(basename "$t")") > /tmp/test-out.txt 2>&1; then echo "ok   $t"
             else echo "FAIL $t"; cat /tmp/test-out.txt; failed="$failed $t"; fi
           done
+          if [ "$found" = 0 ]; then
+            if [ -f agents/pack-layout.json ]; then echo "::error::agents/pack-layout.json exists but no test-*.mjs was found — the test glob no longer matches the layout"; exit 1; fi
+            echo "no tests in this tree yet"
+          fi
           [ -z "$failed" ] || { echo "::error::failing tests:$failed"; exit 1; }
+          echo "$found test file(s) passed"
 
       # Safe mode is a promise this repo makes to anyone who clones it: a first
       # run shows what it would do rather than doing it. It is one careless edit
