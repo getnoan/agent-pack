@@ -61,7 +61,7 @@ jobs:
           echo "ready=$ready" >> "$GITHUB_OUTPUT"
       - name: Run
         if: steps.configured.outputs.ready == '1'
-        run: node agents/weekly-activity-report-worker.mjs
+        run: node agents/weekly-activity-report/weekly-activity-report-worker.mjs
         env:
           # Who the agents are — see .env.example; unset means the cautious default.
           AGENT_NAME: ${{ vars.AGENT_NAME }}

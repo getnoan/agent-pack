@@ -1,5 +1,6 @@
 # TEMPLATE for a new agent's workflow. Copy to .github/workflows/<agent>.yml and:
-#   1. replace YOUR-AGENT / your-agent (the name, the concurrency group, the worker path),
+#   1. replace YOUR-AGENT / your-agent (the name, the concurrency group, the worker path —
+#      a worker lives in its own folder, agents/<agent>/, and imports shared code from ../shared/),
 #   2. list, in the Configured? step, exactly the secrets this agent cannot run without
 #      (both in `env:` and in the `for name in` line), and forward its own block slugs
 #      and any extra variable under Run;
@@ -71,7 +72,7 @@ jobs:
           echo "ready=$ready" >> "$GITHUB_OUTPUT"
       - name: Run
         if: steps.configured.outputs.ready == '1'
-        run: node agents/your-agent-worker.mjs
+        run: node agents/your-agent/your-agent-worker.mjs
         env:
           # Who the agents are — see .env.example; unset means the cautious default.
           AGENT_NAME: ${{ vars.AGENT_NAME }}

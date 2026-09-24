@@ -16,9 +16,18 @@ import os
 import re
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-GRAMMAR_PATH = os.environ.get(
-    "COMMENT_GRAMMAR_PATH", os.path.join(_HERE, os.pardir, "agents", "comment-grammar.json")
-)
+
+
+def _agents_file(name):
+    """agents/<name> upstream; agents/shared/<name> in the agent pack, which groups agents/ by agent."""
+    for sub in (("shared",), ()):
+        p = os.path.join(_HERE, os.pardir, "agents", *sub, name)
+        if os.path.exists(p):
+            return p
+    return os.path.join(_HERE, os.pardir, "agents", name)
+
+
+GRAMMAR_PATH = os.environ.get("COMMENT_GRAMMAR_PATH", _agents_file("comment-grammar.json"))
 
 with open(GRAMMAR_PATH, encoding="utf-8") as _f:
     _G = json.load(_f)
