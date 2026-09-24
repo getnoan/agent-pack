@@ -2,8 +2,8 @@
   "_readme": [
     "The fleet's one comment grammar: what a teammate's comment on a task ASKS FOR.",
     "Compiled by agents/comment-grammar.mjs and design/comment_grammar.py from these",
-    "very strings, so the two languages cannot drift — they did (fleet loop task",
-    "on 2026-09-11, five of sixteen real phrases were read differently by",
+    "very strings, so the two languages cannot drift — they did: on 2026-09-11,",
+    "five of sixteen real phrases were read differently by",
     "the deck (Python) and the demo/SDR (JS) classifiers, and the dangerous direction",
     "was the silent no-op — 'send as-is' on a parked demo meant nothing was sent while",
     "the writer believed they had approved it.",

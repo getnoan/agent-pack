@@ -213,12 +213,39 @@ def load_cfg():
     # to honour the per-category key on its own.
     for ck, ev in [("noan_api_key", "NOAN_PERSONAL_API_KEY"),
                    ("noan_api_key", "NOAN_AGENT_API_KEY"),
+                   # The model key has two accepted names, matching resolveKey() in
+                   # agents/anthropic.mjs: ANTHROPIC_API_KEY is canonical, LLM_API_KEY is for a
+                   # user whose endpoint is not Anthropic and for whom that name is a lie. The
+                   # canonical one is listed LAST so it WINS, by the same rule as the NOAN pair.
+                   ("anthropic_api_key", "LLM_API_KEY"),
                    ("anthropic_api_key", "ANTHROPIC_API_KEY"),
+                   # Model ids, so the deck is retuned the way every other agent is. The JSON
+                   # config keeps working and still wins when the variable is unset.
+                   ("design_model", "DESIGN_MODEL"),
+                   ("cover_model", "COVER_MODEL"),
                    ("resend_api_key", "RESEND_API_KEY"),
                    ("deck_test_recipient", "DECK_TEST_RECIPIENT")]:
         v = os.environ.get(ev, "").strip()
         if v:
             cfg[ck] = v
+    # The endpoint, from the same variable the JS agents read, so one setting moves the whole
+    # pack rather than the deck needing its own. NOTE the shapes differ and that is deliberate:
+    # ANTHROPIC_BASE_URL is the BARE base (agents/anthropic.mjs appends "/v1/messages"), while
+    # this config key has always carried the version segment and appends only "/messages". So
+    # the segment is added here rather than the variable being documented two different ways.
+    #
+    # Not forgiving of a "/v1" already on the variable, on purpose: anthropic.mjs would build
+    # ".../v1/v1/messages" from the same value, and a deck that quietly worked where the other
+    # five agents failed would hide the misconfiguration rather than surface it.
+    base = os.environ.get("ANTHROPIC_BASE_URL", "").strip()
+    if base:
+        cfg["anthropic_base"] = base.rstrip("/") + "/v1"
+    # A default, because the call sites index this key rather than .get() it, and a tree with no
+    # config.json yet has nothing to index — config.defaults.json is on the export's forbidden
+    # list, so in the pack it is absent by design. Before this, the deck raised KeyError on a
+    # fresh checkout instead of saying what was unset. Same default as agents/anthropic.mjs, so
+    # the two clients agree when nothing is configured as well as when something is.
+    cfg.setdefault("anthropic_base", "https://api.anthropic.com/v1")
     return cfg
 
 

@@ -38,6 +38,7 @@
  */
 
 import { noanGet, noanGetAll, assertNoanKey, postNote } from "./noan.mjs";
+import { assertModelKey } from "./anthropic.mjs";
 import { agentName } from "./required-env.mjs";
 import { fetchMemosByContact, mergeCounts, shouldSeedBaseline, computeMemoDeltas } from "./contact-memos.mjs";
 import { sendReportEmail } from "./resend.mjs";
@@ -76,7 +77,9 @@ function required(name) {
 // with neither, so naming the shared key here would reject a correctly configured
 // per-category run — and it is why the shared key had to stay in every workflow env block.
 assertNoanKey();
-["ANTHROPIC_API_KEY", "RESEND_API_KEY", "MAIL_FROM",
+// Either model-key name satisfies this; see assertModelKey.
+assertModelKey();
+["RESEND_API_KEY", "MAIL_FROM",
  "ACTIVITY_REPORT_CONFIG_BLOCK_SLUG", "ACTIVITY_REPORT_PLAYBOOK_BLOCK_SLUG"].forEach(required);
 
 /* ---------------- brain (editable in the NOAN UI) ---------------- */

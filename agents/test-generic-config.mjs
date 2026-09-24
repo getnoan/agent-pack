@@ -26,7 +26,7 @@ import {
 import { commanderAuthVerdict, commanderDomain } from "./commander-auth.mjs";
 import { addressesAgent } from "./task-comments.mjs";
 import { RESPOND_BY, LANE_RESPONSE } from "./respond-by.mjs";
-import { SHIPPED_TESTS, SHIPPED_TOOLS, stripComments, stripPython, sweepCode, sweepProse, sweepDeckPrompt, sweepRawContactCreate, WORKSPACE_ID, SYNTHETIC_ID } from "./oss-sweeps.mjs";
+import { SHIPPED_TESTS, SHIPPED_TOOLS, SHIPPED_ASSETS, stripComments, stripPython, sweepCode, sweepProse, sweepData, sweepDeckPrompt, sweepRawContactCreate, WORKSPACE_ID, SYNTHETIC_ID, PRIVATE_POINTER_NO_ID } from "./oss-sweeps.mjs";
 
 let pass = 0, fail = 0;
 const ok = (n, c, d = "") => { if (c) { pass++; console.log(`  ok   ${n}`); } else { fail++; console.log(`  FAIL ${n}${d ? ` — ${d}` : ""}`); } };
@@ -192,15 +192,44 @@ ok("…and that guard matches the shape it bans",
  * exporter became `const EXTRA_TESTS = [...SHIPPED_TESTS];`: the regex ran on to the next `\n]`
  * in the file and swept six unrelated names, so the guard kept passing over the wrong set.
  * Reading the shipped constant needs no parsing and no fallback — it ships, so it is here. */
-const testIds = [];
+const testIds = [], testPointers = [];
 for (const f of [...SHIPPED_TESTS].sort()) {
   let src; try { src = readFileSync(path.join(FLEET, f), "utf8"); } catch { continue; }
   // NOT stripComments: a fixture id and a cited id are the same disclosure, and stripping
   // first is how a comment in a shipped test went unchecked.
   for (const u of src.match(WORKSPACE_ID) || []) if (!SYNTHETIC_ID.test(u)) testIds.push(`${f} ${u}`);
+  /* Pointers, for the same reason and on the same argument the docblock above makes about ids:
+   * a plan doc, a fleet task id or a private issue number is no more followable in a FIXTURE
+   * than in a comment, and neither is a judgement call about whose domain it is. The exclusion
+   * was right about names, wrong about ids (fixed 2026-09-20), and wrong about pointers too —
+   * the pre-publication review's item 6 was a shipped test carrying a fleet task id and a
+   * private issue number, fixed by hand with nothing left to stop it coming back.
+   *
+   * Names stay exempt, deliberately: test-fleet-env.mjs carries the fleet's name and domain on
+   * purpose, and this file has to spell "Verity" out to assert its absence. Measured at zero
+   * hits across the 14 shipped tests before switching on, so this pins the tree, not a backlog. */
+  src.split("\n").forEach((line, i) => {
+    const p = line.match(PRIVATE_POINTER_NO_ID);
+    if (p) testPointers.push(`${f}:${i + 1} ${p[0].trim()} — ${line.trim().slice(0, 80)}`);
+  });
 }
 ok(`no shipped test carries a real workspace id (${SHIPPED_TESTS.length} tests)`, testIds.length === 0,
    `${testIds.join(", ")} — use a synthetic id (aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa); this tree ships`);
+ok(`no shipped test cites private history (${SHIPPED_TESTS.length} tests)`, testPointers.length === 0,
+   testPointers.length ? `\n      ${testPointers.join("\n      ")}` : "");
+
+/* The data files too. This hole was structural, not a missing pattern: the phrase that rode out
+ * in comment-grammar.json's `_readme` on the first public export was ALREADY in PRIVATE_POINTER,
+ * and matched it — a .json simply has no comments for the prose sweep and is not source for the
+ * code sweep, so neither ever opened the file. See sweepData for why the root docs are not on
+ * this list. */
+const dataHits = [];
+for (const f of [...SHIPPED_ASSETS].sort()) {
+  let src; try { src = readFileSync(path.join(FLEET, f), "utf8"); } catch { continue; }
+  dataHits.push(...sweepData(f, src));
+}
+ok(`no shipped data file carries our identity or private history (${SHIPPED_ASSETS.length} files)`,
+   dataHits.length === 0, dataHits.length ? `\n      ${dataHits.join("\n      ")}` : "");
 
 /* The prose too. Comments and docblocks ship with the code, and a stranger
  * reading "re-assign Verity" or "(Neal, 2026-09-07)" is reading about a
@@ -230,8 +259,13 @@ const SHIPPED = new Set([...closure, ...DESIGN_PY.map(f => path.basename(f)), ..
 // pointers: true. A plan doc, a fleet task id or an internal service name in a comment is as
 // useless to a stranger as our name is, and until now only the UUID half ran downstream — the
 // rest sat behind a flag that only the upstream readiness tool passed. That is how eight
-// NEWSLETTER-V2-PLAN.md citations shipped. Measured at zero hits before switching it on, so
-// this pins the tree where it is rather than papering over a backlog.
+// citations of a private plan doc shipped — named here verbatim until the shipped-test sweep
+// above started reading this file too. Measured at zero hits before switching it on, so this
+// pins the tree where it is rather than papering over a backlog.
+// The `run|job <digits>` alternative was added later, on the same terms: measured at 3 hits in
+// shipped code first (two of which had already reached the public pack, because no existing
+// alternative matched the parenthesised `run <id>` form), those three cleaned, then switched
+// on at zero.
 for (const f of [...[...closure].sort().map(f => path.join(FLEET, f)), ...DESIGN_PY]) prose.push(...sweepProse(path.basename(f), readFileSync(f, "utf8"), { shipped: SHIPPED, pointers: true }));
 const unshipped = prose.filter(p => / unshipped /.test(p));
 const strictProse = prose.filter(p => !/ unshipped /.test(p));

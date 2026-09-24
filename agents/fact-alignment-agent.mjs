@@ -175,7 +175,7 @@ function buildUserPrompt({ windowLabel, isFirstRun, inScopeBlocks, gapBlocks, ta
 // streams every request on a 15-minute budget, so a long response does not trip a
 // transport timeout either.
 //
-// 64000 since 2026-09-22. That 32000 failure (run 35655596914) threw six minutes in, before
+// 64000 since 2026-09-22. That 32000 failure threw six minutes in, before
 // anything was rendered or posted — the generation is paid for and the week's report is lost.
 // An immediate retry of the IDENTICAL dispatch succeeded: same 93 notes-scan candidates, same
 // 280 blocks, same 86 anomalies. Same input, different outcome is the signature of a ceiling

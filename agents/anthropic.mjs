@@ -15,8 +15,79 @@ import { recordUsage } from "./usage-log.mjs";
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
-const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
-const KEY = process.env.ANTHROPIC_API_KEY;
+/* The endpoint is configurable, so a pack user is not locked to one vendor's billing.
+ *
+ * ANTHROPIC_BASE_URL is the Anthropic SDK's own variable name, not one invented here, and it is
+ * the whole mechanism: every gateway that speaks the Messages wire format — LiteLLM, OpenRouter,
+ * a Bedrock or Vertex proxy — is reachable by setting it, with no adapter in this repo and no
+ * change in any caller. That is deliberate. A second provider adapter living here would mean
+ * owning system-prompt placement, JSON-schema and tool-use translation forever, in two public
+ * packs, and its failure mode is silent: caching and thinking simply stop happening while every
+ * call still succeeds. Translation belongs in a gateway the user chooses and can see.
+ *
+ * So the agents are model-agnostic, and in the common case need no extra infrastructure:
+ *   - OpenRouter serves the Messages format directly at https://openrouter.ai/api (model-
+ *     agnostic, no proxy to run). Set the *_MODEL variables to ids it knows.
+ *   - LiteLLM, self-hosted, translates a Messages request to openai, gemini, vertex_ai,
+ *     bedrock and azure models — the option to take when you want your own routing or
+ *     cost tracking.
+ *
+ * The one thing that does NOT work is pointing this at a provider's own OpenAI-shaped URL
+ * (api.openai.com and the like): those speak Chat Completions, and the request and response
+ * bodies differ. That is a fact about one URL, not a limit on which models can be used.
+ *
+ * ANTHROPIC_API_KEY stays canonical: 32 fleet modules name it in their required-env arrays and
+ * 31 workflows pass it as a secret, so renaming it would churn all of those and every Actions
+ * secret for no functional gain. LLM_API_KEY is an alias for a user whose endpoint is not
+ * Anthropic, for whom the Anthropic-shaped name is simply a lie. */
+export const DEFAULT_BASE_URL = "https://api.anthropic.com";
+
+/** The base URL, trailing slashes stripped. A malformed value is a NAMED error here rather than
+ *  an unhelpful fetch failure later — same rule the mail env guard applies to RESEND_API_KEY. */
+export function resolveBaseUrl(env = process.env) {
+  const raw = (env.ANTHROPIC_BASE_URL || DEFAULT_BASE_URL).trim().replace(/\/+$/, "");
+  let url;
+  try { url = new URL(raw); } catch { throw new Error(`ANTHROPIC_BASE_URL is not a valid URL: ${raw}`); }
+  if (!/^https?:$/.test(url.protocol)) throw new Error(`ANTHROPIC_BASE_URL must be http(s): ${raw}`);
+  return raw;
+}
+export const messagesUrl = (env = process.env) => `${resolveBaseUrl(env)}/v1/messages`;
+/** Canonical name first, neutral alias second. */
+export const resolveKey = (env = process.env) => env.ANTHROPIC_API_KEY || env.LLM_API_KEY;
+/** Whether the configured endpoint is Anthropic's own — i.e. whether the Anthropic-only
+ *  features below (prompt caching, extended thinking) can be relied on. */
+export const isAnthropicEndpoint = (env = process.env) => {
+  try { return new URL(resolveBaseUrl(env)).hostname === "api.anthropic.com"; } catch { return false; }
+};
+
+/* Say what degraded and whose problem it is, once per process. A gateway that ignores
+ * cache_control still answers 200, so the only symptom of losing caching is the bill — which is
+ * exactly how sixteen uncached agents went unnoticed until someone read the spend report. */
+let announced = false;
+export function announceEndpoint(env = process.env, log = console.warn) {
+  if (announced || isAnthropicEndpoint(env)) return;
+  announced = true;
+  log(`anthropic.mjs: routing to ${new URL(resolveBaseUrl(env)).host} via ANTHROPIC_BASE_URL. `
+    + `Prompt caching and extended thinking are Anthropic Messages features: this endpoint may ignore `
+    + `them, so cache savings and thinking budgets are NOT verified here. Set the *_MODEL variables `
+    + `to model ids your endpoint knows — the "claude-*" defaults will not resolve elsewhere.`);
+}
+
+/** The model key, or a named error — the exact shape of assertNoanKey() in noan.mjs, and here
+ *  for the same reason: two names satisfy one requirement, so a plain presence check on one of
+ *  them is wrong. Four shipped workers listed "ANTHROPIC_API_KEY" in their REQUIRED_ENV array,
+ *  which would have refused to start for a user whose endpoint is not Anthropic — the endpoint
+ *  being configurable is inert if the front door still demands one vendor's variable name. */
+export function assertModelKey(env = process.env) {
+  if (resolveKey(env)) return;
+  throw new Error(
+    "No model API key. Set ANTHROPIC_API_KEY, or LLM_API_KEY if your endpoint is not Anthropic " +
+    "(see ANTHROPIC_BASE_URL). A GitHub secret that is missing or misspelled renders as an empty " +
+    "string, so check the secret name first.");
+}
+
+const ANTHROPIC_URL = messagesUrl();
+const KEY = resolveKey();
 
 /** Model used for per-surface fact extraction (high volume, mechanical). */
 export const EXTRACT_MODEL = process.env.AUDIT_EXTRACT_MODEL || "claude-opus-5";
@@ -214,6 +285,7 @@ function betaHeader(betas, body) {
  *   (env) ANTHROPIC_DUMP_DIR — see dumpRequest above.
  * Omitted, existing callers see byte-identical requests and ledger rows. */
 async function post(body, { retries = 4, timeoutMs = 15 * 60 * 1000, betas, usage: usageOpts } = {}) {
+  announceEndpoint();
   for (let attempt = 0; ; attempt++) {
     const headers = {
       "Content-Type": "application/json",

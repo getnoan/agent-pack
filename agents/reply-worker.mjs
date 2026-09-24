@@ -60,6 +60,7 @@ import {
   parkForHuman,
   taskHasTag,
   unparkTask, assignResolvedOwner } from "./noan.mjs";
+import { assertModelKey } from "./anthropic.mjs";
 import { planQueuedTask, contactCreatePlan, warnUnregisteredTriggers } from "./command-queue.mjs";
 import { runReplyAgent } from "./reply-agent.mjs";
 import { runCommandAgent } from "./command-agent.mjs";
@@ -134,7 +135,9 @@ function required(name) {
 // with neither, so naming the shared key here would reject a correctly configured
 // per-category run — and it is why the shared key had to stay in every workflow env block.
 assertNoanKey();
-["ANTHROPIC_API_KEY", "RESEND_API_KEY", "MAIL_FROM",
+// Either model-key name satisfies this; see assertModelKey.
+assertModelKey();
+["RESEND_API_KEY", "MAIL_FROM",
  "REPLY_CONFIG_BLOCK_SLUG", "REPLY_PLAYBOOK_BLOCK_SLUG"].forEach(required);
 
 /* ---------------- Resend inbound ---------------- */

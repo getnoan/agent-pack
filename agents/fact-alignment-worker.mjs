@@ -42,6 +42,7 @@
 
 import { pathToFileURL } from "node:url";
 import { noanGet, noanGetAll, noanPost, noanPatch, noanPut, findTagId, whoAmI, assertNoanKey, postNote, NOTE_CONTENT_CAP } from "./noan.mjs";
+import { assertModelKey } from "./anthropic.mjs";
 import { respondLine } from "./respond-by.mjs";
 import { sendReportEmail } from "./resend.mjs";
 import { peekState, saveLocalState } from "./state-local.mjs";
@@ -137,7 +138,7 @@ function pruneManifests(manifests, now) {
 // Checked inside main(), not at module load. latestSiteScan and pruneManifests are pure and
 // imported by tests, and a module that exits the process on import cannot be tested without
 // inventing dummy secrets. Same reason the other workers upstream do it this way.
-const REQUIRED_ENV = ["ANTHROPIC_API_KEY", "RESEND_API_KEY", "MAIL_FROM",
+const REQUIRED_ENV = ["RESEND_API_KEY", "MAIL_FROM",
   "FACT_ALIGNMENT_CONFIG_BLOCK_SLUG", "FACT_ALIGNMENT_PLAYBOOK_BLOCK_SLUG"];
 function requireEnv() {
   // Either NOAN key satisfies this — noan.mjs prefers the per-category key and refuses to run with
@@ -145,6 +146,8 @@ function requireEnv() {
   // that the pure halves are imported by tests, and a module that throws on import cannot be tested
   // without inventing dummy secrets.
   assertNoanKey();
+  // Either model-key name satisfies this; see assertModelKey.
+  assertModelKey();
   const missing = REQUIRED_ENV.filter(n => !process.env[n]);
   if (missing.length) { console.error(`Missing required env var(s): ${missing.join(", ")}`); process.exit(1); }
 }
