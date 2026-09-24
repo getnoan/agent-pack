@@ -19,7 +19,7 @@
 
 import { execFileSync } from "node:child_process";
 
-const DOWNSTREAM_OWNED = new Set(["README.md","SECURITY.md","LICENSE",".gitignore",".gitleaks.toml",".env.example","agents/agent-config-seed.mjs","agents/seed-weekly-activity-report.mjs","agents/seed-fact-alignment.mjs","agents/seed-market-research-refresh.mjs","agents/seed-deck.mjs","agents/seed-customer-support.mjs",".github/workflows/ci.yml",".github/workflows/keepalive.yml",".github/workflows/weekly-activity-report.yml",".github/workflows/fact-alignment.yml",".github/workflows/market-research-refresh.yml",".github/workflows/customer-support.yml",".github/workflows/newsletter.yml",".github/workflows/sales-deck.yml","templates/agent-workflow.yml"]);
+const DOWNSTREAM_OWNED = new Set(["README.md","SECURITY.md","LICENSE",".gitignore",".gitleaks.toml",".env.example","agents/shared/agent-config-seed.mjs","agents/weekly-activity-report/seed-weekly-activity-report.mjs","agents/fact-alignment/seed-fact-alignment.mjs","agents/market-research-refresh/seed-market-research-refresh.mjs","agents/sales-deck/seed-deck.mjs","agents/customer-support/seed-customer-support.mjs",".github/workflows/ci.yml",".github/workflows/keepalive.yml",".github/workflows/weekly-activity-report.yml",".github/workflows/fact-alignment.yml",".github/workflows/market-research-refresh.yml",".github/workflows/customer-support.yml",".github/workflows/newsletter.yml",".github/workflows/sales-deck.yml","templates/agent-workflow.yml"]);
 const EXPORT_BRANCH_PREFIX = "export/";
 /* A fork is not an export target. Someone following the README adds a workflow,
  * a worker and a seed script in their own copy; none is downstream-owned HERE,

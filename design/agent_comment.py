@@ -18,10 +18,18 @@ import os
 import re
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-SPEC_PATH = os.environ.get(
-    "AGENT_COMMENT_MARKER_PATH",
-    os.path.join(_HERE, os.pardir, "agents", "agent-comment-marker.json"),
-)
+
+
+def _agents_file(name):
+    """agents/<name> upstream; agents/shared/<name> in the agent pack, which groups agents/ by agent."""
+    for sub in (("shared",), ()):
+        p = os.path.join(_HERE, os.pardir, "agents", *sub, name)
+        if os.path.exists(p):
+            return p
+    return os.path.join(_HERE, os.pardir, "agents", name)
+
+
+SPEC_PATH = os.environ.get("AGENT_COMMENT_MARKER_PATH", _agents_file("agent-comment-marker.json"))
 
 with open(SPEC_PATH, encoding="utf-8") as _f:
     SPEC = json.load(_f)
