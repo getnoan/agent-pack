@@ -31,6 +31,17 @@ Baseline for everything: a NOAN API key, a key for whichever model you want
 answering, and a Resend API key for email. The model does not have to be
 Anthropic's — see *Which model answers* below.
 
+### Web-facing agents live in their own repos
+
+Two more agents run as always-on web services on your own domain, not as scheduled
+jobs, so they are released separately. Each deploys as one service and has an
+`INSTALL.md` written for your coding agent to follow; step 0 runs locally with no keys.
+
+| Repo | What it does |
+|---|---|
+| [**verity-meetings**](https://github.com/getnoan/verity-meetings) | Booking pages on your own domain. Meeting types and availability are facts you edit in NOAN; bookings write calendar events and land as tasks |
+| [**verity-chat**](https://github.com/getnoan/verity-chat) | A chat widget for your website — one script tag — that answers only from your facts, files support cases as tasks, and caps its own daily spend |
+
 ## Start here
 
 **The quickest way is the NOAN wizard.** One command takes your NOAN key, and with
