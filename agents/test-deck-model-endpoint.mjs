@@ -51,8 +51,21 @@ function deckCfg(env) {
     "c = m.load_cfg()",
     "print(json.dumps({'base': c.get('anthropic_base'), 'key': c.get('anthropic_api_key'), 'model': c.get('design_model')}))",
   ].join("\n");
-  // A clean environment: inherited keys would mask exactly the bug this is checking for.
-  const clean = { PATH: process.env.PATH, HOME: process.env.HOME, ...env };
+  /* A clean environment: inherited keys would mask exactly the bug this is checking for.
+   *
+   * DESIGN_DIR is PINNED, and that is not tidiness. deck.py resolves its config directory as
+   * DESIGN_DIR, else ~/.noan-design-agent when that exists, else the script's own directory.
+   * Passing the real HOME through therefore made the answer depend on whose machine ran the
+   * test: clean on a CI runner, and red for anyone who also runs the design agent, whose real
+   * config.json supplies a design_model the assertions expect to be absent. Green where nobody
+   * is looking and red for the people most likely to run it — the inversion this pack exists to
+   * prevent, reported by review on the pack PR rather than caught here.
+   *
+   * DESIGN_DIR wins over the home directory inside deck.py, so pinning it settles the lookup.
+   * HOME is pinned to REPO as well, so that nothing else reachable from load_cfg() can read a
+   * developer's dotfiles either; on its own that would be an assumption about REPO's contents,
+   * which is why DESIGN_DIR is the fix and this is only the belt to its braces. */
+  const clean = { PATH: process.env.PATH, HOME: REPO, DESIGN_DIR: DESIGN, ...env };
   const out = execFileSync("python3", ["-c", code], { cwd: REPO, env: clean, encoding: "utf8" });
   return JSON.parse(out.trim().split("\n").pop());
 }
