@@ -126,11 +126,14 @@ export function sanitizeCopy(s) {
   return String(s ?? "").replace(/\s*[—–―]\s*/g, ", ");
 }
 
-/** Asset text arrives with a few HTML entities baked in (the changelog path does the same). */
+/** Asset text arrives with a few HTML entities baked in (the changelog path does the same).
+ *  `&amp;` is decoded LAST: first, it turned the text "&amp;lt;" (a literal "&lt;") into "<",
+ *  decoding twice — the double-unescape CodeQL flags as js/double-escaping. */
 export function decodeEntities(s) {
   return String(s ?? "")
-    .replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">")
-    .replace(/&quot;/g, "\"").replace(/&#39;/g, "'").replace(/&nbsp;/g, " ");
+    .replace(/&lt;/g, "<").replace(/&gt;/g, ">")
+    .replace(/&quot;/g, "\"").replace(/&#39;/g, "'").replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&");
 }
 
 /** The id that survives edits: originalId, else the uuid at the front of the list id. */

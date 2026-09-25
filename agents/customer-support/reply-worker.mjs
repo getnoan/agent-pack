@@ -90,6 +90,7 @@ const { hasImplementationThread, handleImplementationReply, maybeImplementationS
 import { respondLine } from "../shared/respond-by.mjs";
 import { requireEnv, envList, envAddress, agentName as defaultAgentName, agentIdentityId, allowedLinks, pronouns } from "../shared/required-env.mjs";
 import { USER_TAGS, isUserContact } from "./trigger-tags.mjs";
+import { stripHtml } from "./html-text.mjs";
 
 const AGENT_NAME     = defaultAgentName();
 const TEST_RECIPIENT = process.env.TEST_RECIPIENT || null;
@@ -225,15 +226,6 @@ function isAutoSender(email) {
          /@(bounces?|notifications?)\./i.test(email);
 }
 
-function stripHtml(html) {
-  return String(html || "")
-    .replace(/<script[\s\S]*?<\/script>/gi, " ")
-    .replace(/<style[\s\S]*?<\/style>/gi, " ")
-    .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/[ \t]+/g, " ")
-    .trim();
-}
 
 function badLinks(html, text) {
   const urls = `${html || ""}\n${text || ""}`.match(/https?:\/\/[^\s"'<>)]+/gi) || [];
