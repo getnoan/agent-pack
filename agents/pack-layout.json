@@ -20,6 +20,7 @@
     "fact-alignment-worker.mjs": "fact-alignment/fact-alignment-worker.mjs",
     "google-cal.mjs": "customer-support/google-cal.mjs",
     "grounding-check.mjs": "shared/grounding-check.mjs",
+    "html-text.mjs": "customer-support/html-text.mjs",
     "markdown-email.mjs": "shared/markdown-email.mjs",
     "market-research-refresh-agent.mjs": "market-research-refresh/market-research-refresh-agent.mjs",
     "market-research-refresh-worker.mjs": "market-research-refresh/market-research-refresh-worker.mjs",

@@ -858,11 +858,26 @@ def load_slide_rules(cfg):
     hex, typefaces, display leading and tracking). Read at run time so the
     brand lives in the fact layer, never in this file. Returns (text, source);
     fail-soft to the generic built-in default, like load_playbook."""
-    text = load_playbook(cfg) or ""
-    m = re.search(r"^## Slide design[^\n]*\n(?:.*\n?)*?(?=^## |\Z)", text, re.M)
-    if not m:
+    section = slide_design_section(load_playbook(cfg) or "")
+    if section is None:
         return SLIDE_RULES_DEFAULT, "built-in default"
-    return m.group(0).strip(), "Deck Playbook fact"
+    return section, "Deck Playbook fact"
+
+
+def slide_design_section(text):
+    """The `## Slide design` section of a Playbook: its heading line and every line after it
+    up to the next `## ` heading (a `### ` subheading stays inside). None when there is none.
+
+    A line scan, not a regex. The regex this replaces, `(?:.*\\n?)*?` under a lookahead, had
+    nested quantifiers that can each match the same text, so a long enough fact made it
+    backtrack exponentially (CodeQL py/redos) — a hung deck run from one bad edit to a fact.
+    Same answers as that regex, including None for a heading with no newline after it."""
+    lines = text.split("\n")   # "\n" only, as the regex's ^ and . saw lines — not splitlines()
+    start = next((i for i, l in enumerate(lines) if l.startswith("## Slide design")), None)
+    if start is None or start == len(lines) - 1:   # no newline after the heading
+        return None
+    end = next((j for j in range(start + 1, len(lines)) if lines[j].startswith("## ")), len(lines))
+    return "\n".join(lines[start:end]).strip()
 
 
 CONFIDENCE_RULES = """## Confidence rules
