@@ -49,6 +49,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 import { noanGet, noanGetAll, noanPost, assertNoanKey, postNote } from "../shared/noan.mjs";
+import { unescapeUi } from "./ui-escaping.mjs";
 import { assertModelKey } from "../shared/anthropic.mjs";
 import { sendReportEmail } from "../shared/resend.mjs";
 import { renderReportEmailHtml } from "../shared/markdown-email.mjs";
@@ -119,7 +120,7 @@ function required(name) {
 // early and swallows the whole document as "slugs". Caught before first run; the fence returned
 // 26 and 33 entries instead of 12 and 6.
 function parseFence(text, name) {
-  const m = String(text).match(
+  const m = unescapeUi(text).match(
     new RegExp(`^\\[\\[${name}\\]\\][ \\t]*\\r?\\n([\\s\\S]*?)\\r?\\n[ \\t]*\\[\\[\\/${name}\\]\\][ \\t]*$`, "m"));
   return m ? m[1].trim() : null;
 }
