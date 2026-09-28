@@ -20,6 +20,24 @@ jobs:
         with:
           node-version: "22"
 
+      # Dependabot keeps .github/workflows current and never looks at templates/, so the workflow
+      # people copy to add an agent would drift further behind every month — and a security fix
+      # to an action would reach the shipped workflows but never an agent built from the template.
+      # Every `uses:` in the template must be pinned to a commit and match a pin the workflows use.
+      - name: Template actions match the workflows
+        run: |
+          fail=0
+          pins=$(grep -hoE 'uses: [^ ]+@[0-9a-f]{40}' .github/workflows/*.yml | sort -u)
+          while IFS= read -r line; do
+            [ -n "$line" ] || continue
+            if ! printf '%s\n' "$line" | grep -qE '@[0-9a-f]{40}$'; then
+              echo "::error file=templates/agent-workflow.yml::not pinned to a commit: $line"; fail=1
+            elif ! printf '%s\n' "$pins" | grep -qxF "$line"; then
+              echo "::error file=templates/agent-workflow.yml::$line is not a pin the workflows use — copy the version from .github/workflows"; fail=1
+            fi
+          done <<< "$(grep -hoE 'uses: [^ #]+' templates/*.yml | sort -u)"
+          exit $fail
+
       - name: JavaScript syntax
         run: |
           fail=0
