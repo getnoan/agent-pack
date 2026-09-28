@@ -71,6 +71,7 @@
     "test-weekly-report-memos.mjs": "weekly-activity-report/test-weekly-report-memos.mjs",
     "test-weekly-report-notes-section.mjs": "weekly-activity-report/test-weekly-report-notes-section.mjs",
     "trigger-tags.mjs": "customer-support/trigger-tags.mjs",
+    "ui-escaping.mjs": "market-research-refresh/ui-escaping.mjs",
     "usage-log.mjs": "shared/usage-log.mjs",
     "weekly-activity-report-agent.mjs": "weekly-activity-report/weekly-activity-report-agent.mjs",
     "weekly-activity-report-worker.mjs": "weekly-activity-report/weekly-activity-report-worker.mjs"
