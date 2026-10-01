@@ -27,7 +27,9 @@ not a configuration convenience bolted on the side; it is the whole idea.
 | **sales deck** | Builds a personalised deck for a named prospect, renders a PDF, sends it or parks it for approval | headless Chrome, object storage |
 | **newsletter** | Sends a NOAN asset to every contact carrying a tag, exactly once each | — |
 
-Baseline for everything: a NOAN API key, a key for whichever model you want
+Baseline for everything: a NOAN API key minted under your **NOAN agent** (an Owner
+creates the agent once under Settings → Team → Agent; its keys are under Team →
+Agent → API keys), a key for whichever model you want
 answering, and a Resend API key for email. The model does not have to be
 Anthropic's — see *Which model answers* below.
 
@@ -144,7 +146,7 @@ nothing run — until the secrets are there.
 
 | Secret | Needed by |
 |---|---|
-| `NOAN_PERSONAL_API_KEY` | every agent |
+| `NOAN_PERSONAL_API_KEY` | every agent: the **agent's** key (Team → Agent → API keys), so what the agents write is theirs |
 | `RESEND_API_KEY` | every agent |
 | `ANTHROPIC_API_KEY` **or** `LLM_API_KEY` | every agent except the newsletter — either name works, see *Which model answers* |
 | `DATABASE_URL` | every agent except market research |
@@ -158,7 +160,9 @@ answers*), the block slugs each seed script prints when you run it, and
 the identity set under *Whose agents these are* below: `AGENT_NAME`,
 `COMPANY_NAME`, `AGENT_IDENTITY_IDS`, `COMMANDERS`, `TEAMMATE_DOMAIN`,
 `AGENT_ALLOWED_LINKS`, `REPORT_RECIPIENT_TAG`, plus `MARKET_RESEARCH_STACK_SLUG`
-for market research. Every workflow forwards them; leave one unset and that
+for market research, and the people work is handed to: `PARK_ASSIGNEES_CS`,
+`PARK_ASSIGNEES_SALES`, `PARK_ASSIGNEES_ENG`, `HUMAN_IDENTITIES`,
+`FACT_ALIGNMENT_REVIEW_ASSIGNEES` and `REPLY_HUMAN_ASSIGNEES`. Every workflow forwards them; leave one unset and that
 agent takes the cautious default.
 
 ### Which model answers
@@ -317,7 +321,8 @@ Optional. The notes route above needs nothing installed.
 Nothing in the code names a company, an agent, or a team. The agents sign as
 `AGENT_NAME`, speak for `COMPANY_NAME` (or, unset, your NOAN project's
 name), treat `COMMANDERS` and anyone at `TEAMMATE_DOMAIN` as teammates who
-may steer them, link only to `AGENT_ALLOWED_LINKS`, and email their reports
+may steer them (people only: the agent itself is never a teammate), answer to
+`AGENT_IDENTITY_IDS` (your NOAN agent's id), link only to `AGENT_ALLOWED_LINKS`, and email their reports
 to the contacts carrying `REPORT_RECIPIENT_TAG`. Leave a value unset and the
 agent does the cautious thing: signs as "Agent", accepts steering from nobody,
 puts no links in what it sends, and says in its log that a report had no

@@ -70,6 +70,14 @@ jobs:
           COMPANY_NAME: ${{ vars.COMPANY_NAME }}
           AGENT_IDENTITY_IDS: ${{ vars.AGENT_IDENTITY_IDS }}
           COMMANDERS: ${{ vars.COMMANDERS }}
+          # The people work is handed to when an agent parks or files a task. Never derived from
+          # the agents' own key: under NOAN's agent role that key is the agent's, not a person's.
+          HUMAN_IDENTITIES: ${{ vars.HUMAN_IDENTITIES }}
+          PARK_ASSIGNEES_CS: ${{ vars.PARK_ASSIGNEES_CS }}
+          PARK_ASSIGNEES_SALES: ${{ vars.PARK_ASSIGNEES_SALES }}
+          PARK_ASSIGNEES_ENG: ${{ vars.PARK_ASSIGNEES_ENG }}
+          # Who an escalated email's follow-up task goes to.
+          REPLY_HUMAN_ASSIGNEES: ${{ vars.REPLY_HUMAN_ASSIGNEES }}
           TEAMMATE_DOMAIN: ${{ vars.TEAMMATE_DOMAIN }}
           AGENT_ALLOWED_LINKS: ${{ vars.AGENT_ALLOWED_LINKS }}
           EMAIL_WORDMARK_URL: ${{ vars.EMAIL_WORDMARK_URL }}
