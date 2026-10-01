@@ -108,6 +108,12 @@ export function normalizeComments(task, { commanders = defaultCommanders(), self
     // creator.id only works where the key is genuinely the agent's identity,
     // which a deployment running under a person's key cannot arrange. The
     // marker travels in the comment itself. See agent-comment-marker.json.
+    //
+    // ORDER MATTERS: this is checked before the Slack relay below. A relayed
+    // comment carries a person's words; if it were ever posted with the
+    // AGENT's own key, creator.id would make it "self" and the person's words
+    // would be ignored. Relays are posted with the workspace owner's key by
+    // design. Keep it that way when the other keys move under the agent.
     if (creatorId && self.has(creatorId)) kind = "self";
     else if (hasAgentMarker(raw)) {
       kind = "self";

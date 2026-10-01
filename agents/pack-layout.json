@@ -38,6 +38,7 @@
     "required-env.mjs": "shared/required-env.mjs",
     "resend.mjs": "shared/resend.mjs",
     "respond-by.mjs": "shared/respond-by.mjs",
+    "retired-stack.mjs": "fact-alignment/retired-stack.mjs",
     "schedule-agent.mjs": "customer-support/schedule-agent.mjs",
     "scripts/firecrawl_scrape.py": "market-research-refresh/scripts/firecrawl_scrape.py",
     "scripts/firecrawl_search.py": "market-research-refresh/scripts/firecrawl_search.py",

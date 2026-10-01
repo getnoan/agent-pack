@@ -165,20 +165,58 @@ function buildUserPrompt(inbound, body, sender) {
   ].join("\n");
 }
 
+/**
+ * Validate a submit_action input before the worker acts on it. Pure.
+ *
+ * `task` is described as "required when action=queue_task" but the schema
+ * cannot say so conditionally, and on 2026-09-12 a forwarded document got a
+ * queue_task with no usable task.type from the model — the worker then
+ * escalated it to a human as
+ * `"undefined" is not an executable capability`. A task that arrives as a
+ * JSON-encoded string (a known tool-use slip on nested objects) is parsed
+ * rather than refused.
+ *
+ *   → { ok: true, input }   input normalised (task parsed if it was a string)
+ *   → { ok: false, why }    returned to the model as an error tool_result
+ */
+export function checkSubmit(input) {
+  const d = { ...(input || {}) };
+  if (typeof d.task === "string") {
+    try { d.task = JSON.parse(d.task); } catch { /* left as-is; refused below */ }
+  }
+  if (d.action !== "queue_task") return { ok: true, input: d };
+  const types = TOOLS.find(t => t.name === "submit_action").input_schema.properties.task.properties.type.enum;
+  const t = d.task;
+  if (!t || typeof t !== "object") return { ok: false, why: `action=queue_task needs a "task" object with type, title and details — none was given. Resubmit with the task, or choose decline/escalate.` };
+  if (!types.includes(t.type)) return { ok: false, why: `task.type ${JSON.stringify(t.type ?? null)} is not one of ${types.join(", ")}. Resubmit with a valid type (general for anything ${defaultAgentName()} should do that no specialist covers), or choose decline/escalate.` };
+  if (!String(t.title || "").trim()) return { ok: false, why: `task.title is empty. Resubmit with a title.` };
+  return { ok: true, input: d };
+}
+
+const MAX_SUBMIT_RETRIES = 2;
+
 export async function runCommandAgent({ inbound, body, sender, capabilities, appCapabilities = "", pendingSummary, agentName = defaultAgentName() }) {
   const system = buildSystemPrompt(capabilities, agentName, pendingSummary, appCapabilities, await companyName());
   const messages = [{ role: "user", content: buildUserPrompt(inbound, body, sender) }];
 
+  let submitRetries = 0;
   for (let turn = 0; turn < 10; turn++) {
     const data = await postMessages({ model: MODEL, max_tokens: 6000, ...THINKING, system, tools: TOOLS, messages }, { usage: { action: "command" } });
     if (data.stop_reason === "refusal") throw new Error(`model refused: ${data.stop_details?.explanation || "no explanation"}`);
     const toolUses = (data.content || []).filter(b => b.type === "tool_use");
 
     const submit = toolUses.find(b => b.name === "submit_action");
+    let submitError = null;
     if (submit) {
       const d = submit.input || {};
       if (d.confidence === "low") return { action: "escalate", reason: `low confidence: ${(d.reason || "").slice(0, 200)}` };
-      return d;
+      const checked = checkSubmit(d);
+      if (checked.ok) return checked.input;
+      // an invalid decision: hand it back rather than letting the worker
+      // escalate a routine email on a malformed field
+      if (submitRetries++ >= MAX_SUBMIT_RETRIES) return { action: "escalate", reason: `submit_action invalid after ${MAX_SUBMIT_RETRIES} retries: ${checked.why}` };
+      console.warn(`command-agent: submit_action rejected (${checked.why}); asking the model to resubmit`);
+      submitError = { type: "tool_result", tool_use_id: submit.id, is_error: true, content: checked.why };
     }
 
     if (!toolUses.length) {
@@ -188,7 +226,7 @@ export async function runCommandAgent({ inbound, body, sender, capabilities, app
     }
 
     messages.push({ role: "assistant", content: data.content });
-    const results = [];
+    const results = submitError ? [submitError] : [];
     for (const tu of toolUses) {
       if (tu.name === "submit_action") continue;
       let out;

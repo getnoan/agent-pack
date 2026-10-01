@@ -36,7 +36,6 @@ export const EXECUTABLE = {
   followup:   {                           tag: "Sales",                needsContact: true, followupTitle: true },
   reengage:   { triggerTag: "reengage",   tag: "Sales",                needsContact: true, pending: true },
   activation: { triggerTag: "activation", tag: "customer success",     needsContact: true }, // no CONFIRM since 2026-08-03 (decided then) — code guards only
-  trial:      { triggerTag: "trial",      tag: "customer success",     needsContact: true },
   social:     { triggerTag: process.env.SOCIAL_TRIGGER_TAG || "Social", needsContact: false },
   linkedin:   { triggerTag: process.env.LINKEDIN_TRIGGER_TAG || "LinkedIn", needsContact: false },
   // a plain to-do for a HUMAN: created bare and left unassigned; no automation runs on it

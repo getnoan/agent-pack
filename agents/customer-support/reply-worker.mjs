@@ -82,6 +82,7 @@ import { loadLane } from "./optional-lane.mjs";
  * generic paths. A lane that exists but fails to load still throws. */
 const { hasOfferedThread, handleReengageReply } = await loadLane("reengage-reply", { hasOfferedThread: () => false });
 const { hasBriefThread, handleBriefReply } = await loadLane("brief-reply", { hasBriefThread: () => false });
+const { hasGrantInfoThread, handleGrantReply } = await loadLane("grant-reply", { hasGrantInfoThread: () => false });
 const { hasCourseThread, handleCourseReply, maybeCourseStartAsk } = await loadLane("course-reply",
   { hasCourseThread: () => false, maybeCourseStartAsk: async () => ({ handled: false }) });
 const { matchDigestSubject, handleProspectorDigestReply } = await loadLane("prospector-replies", { matchDigestSubject: () => null });
@@ -1578,6 +1579,20 @@ async function main() {
           await saveState(state); continue;
         }
         // fallthrough: the thread closed (cancelled, or the call started)
+      }
+
+      // Answers to the grant agent's request for more information. Before the
+      // customer-success path, which would otherwise reply to it as a support
+      // question: the lane records the reply on the contact and sends nothing,
+      // and the grant worker re-checks the application on its next run.
+      if (hasGrantInfoThread(senderEmail)) {
+        const r = await handleGrantReply({ meta, body, senderEmail, contact, mark, log });
+        if (r.handled) { await saveState(state); continue; }
+        if (r.escalate) {
+          await escalate({ inbound: meta, body, contact, reason: r.escalate });
+          mark("grant-reply-failed", { reason: String(r.escalate).slice(0, 200) });
+          await saveState(state); continue;
+        }
       }
 
       // open bespoke-deck offer from the re-engagement agent? a clear YES
