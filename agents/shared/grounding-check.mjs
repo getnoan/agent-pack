@@ -25,7 +25,7 @@
 import { readFileSync, existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { noanGet, noanPost, noanPut, findTaskByExternalId } from "./noan.mjs";
+import { noanGet, noanPost, noanPut, findTaskByExternalId, isAgentIdentity, assignResolvedOwner } from "./noan.mjs";
 import { DESIGN_DIR } from "./pack-paths.mjs";
 
 /** The deck's slugs come from its config (design/config.json, else the example). */
@@ -102,6 +102,7 @@ export async function checkGrounding({ agents = Object.keys(GROUNDING), dryRun =
     assign: async (taskId, id) => noanPut(`/tasks/${taskId}/assignees`, { assigneeIds: [id] }),
     findTask: findTaskByExternalId,
     me: async () => noanGet("/me"),
+    assignOwner: async (taskId) => assignResolvedOwner(taskId, { agent: "grounding", log }),
   };
   const bySlug = new Map();
   for (const a of agents) for (const s of GROUNDING[a]?.slugs || []) { if (!bySlug.has(s)) bySlug.set(s, []); bySlug.get(s).push(a); }
@@ -111,7 +112,7 @@ export async function checkGrounding({ agents = Object.keys(GROUNDING), dryRun =
   for (const r of rows) log(`  ${r.filled ? "✓" : "·"} ${r.title} (${r.slug}) ${r.filled ? `${r.chars} chars` : "EMPTY"} — ${r.agents.join(", ")}`);
   const filed = [];
   if (gaps.length) {
-    let me = null;
+    let me;   // undefined = not asked yet; null = no person to self-assign to
     for (const gap of gaps) {
       const t = taskFor(gap, gap.agents);
       const existing = await deps.findTask(t.externalId);
@@ -120,7 +121,13 @@ export async function checkGrounding({ agents = Object.keys(GROUNDING), dryRun =
       const created = await deps.post("/tasks", { title: t.title, details: t.details, status: "backlog", externalId: t.externalId });
       const id = created?.task?.id || created?.id;
       if (!id) { filed.push({ slug: gap.slug, action: "failed" }); continue; }
-      try { me = me || (await deps.me())?.identity?.id; if (me) await deps.assign(id, me); } catch {}
+      // The key's owner takes the gap when the key is a PERSON's. Under an agent
+      // key that would file the work to the agent itself, so it resolves a human
+      // the way a park does instead (PARK_ASSIGNEES_GROUNDING, else ENG).
+      try {
+        if (me === undefined) { const i = (await deps.me())?.identity; me = i?.id && !isAgentIdentity(i) ? i.id : null; }
+        if (me) await deps.assign(id, me); else await deps.assignOwner(id);
+      } catch {}
       filed.push({ slug: gap.slug, action: "filed", taskId: id, title: t.title });
     }
   }

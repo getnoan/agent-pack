@@ -36,18 +36,21 @@
  *   FACT_ALIGNMENT_REVIEW_DUE_DAYS   default 5
  *   FACT_ALIGNMENT_MANIFEST_RETENTION_DAYS   default 60
  *   FACT_ALIGNMENT_REVIEW_ASSIGNEES   comma-separated identity ids added to the review task
- *                                     alongside the running identity
+ *                                     alongside the running identity when that is a PERSON.
+ *                                     Under an agent key it is the whole list; if it is
+ *                                     empty too, the owner resolves like a park (ENG lane)
  *   DRY_RUN=1                log the computed report, write/send nothing
  */
 
 import { pathToFileURL } from "node:url";
-import { noanGet, noanGetAll, noanPost, noanPatch, noanPut, findTagId, whoAmI, assertNoanKey, postNote, NOTE_CONTENT_CAP } from "../shared/noan.mjs";
+import { noanGet, noanGetAll, noanPost, noanPatch, noanPut, findTagId, keyIdentity, assignResolvedOwner, assertNoanKey, postNote, NOTE_CONTENT_CAP } from "../shared/noan.mjs";
 import { assertModelKey } from "../shared/anthropic.mjs";
 import { respondLine } from "../shared/respond-by.mjs";
 import { sendReportEmail } from "../shared/resend.mjs";
 import { peekState, saveLocalState } from "../shared/state-local.mjs";
 import { renderReportEmailHtml } from "../shared/markdown-email.mjs";
 import { runFactAlignmentAgent, renderReport, renderReportForNote, genuineCandidates, buildManifest, manifestWindowKey } from "./fact-alignment-agent.mjs";
+import { isRetiredStack, isRetiredBlock } from "./retired-stack.mjs";
 
 const CONFIG_SLUG = process.env.FACT_ALIGNMENT_CONFIG_BLOCK_SLUG;
 const PLAYBOOK_SLUG = process.env.FACT_ALIGNMENT_PLAYBOOK_BLOCK_SLUG;
@@ -62,10 +65,10 @@ const DUE_WEEKDAY = 1; // Monday (JS Date#getUTCDay(): 0=Sun..6=Sat) — this au
 // its report (~10KB), so a couple of months of them is well under a megabyte.
 const MANIFEST_RETENTION_DAYS = parseInt(process.env.FACT_ALIGNMENT_MANIFEST_RETENTION_DAYS || "60", 10);
 
-// Extra identities on the weekly review task, alongside the running identity. The worker
-// self-assigns via GET /me, which resolves to whoever owns NOAN_PERSONAL_API_KEY — in Actions
-// that is the owner of the CI secret, so the task names only them unless someone is added
-// here. No API resolves an identity from an email address, so these are raw ids (from GET /me
+// Who reviews the weekly report. The worker adds the key's owner (GET /me) only when that is a
+// PERSON; under a key owned by the workspace's agent identity (role bot) it does not, and the
+// review goes to these ids alone (no one listed: resolved like a park, see assignResolvedOwner).
+// So an install running on an agent key should set this. No API resolves an identity from an email address, so these are raw ids (from GET /me
 // with that person's key).
 const EXTRA_REVIEW_ASSIGNEES = (process.env.FACT_ALIGNMENT_REVIEW_ASSIGNEES || "")
   .split(",").map(v => v.trim()).filter(Boolean);
@@ -266,12 +269,14 @@ async function fetchNotesInWindow(windowStartIso, windowEndIso) {
 
 /* ---------------- in-scope stacks/blocks/facts ---------------- */
 
-async function loadScope(relevantStackSlugs) {
+export async function loadScope(relevantStackSlugs) {
   const allStacks = await noanGetAll(`/stacks?per_page=100`); // full catalog, unfiltered — for stack titles
   const inUseStacks = await noanGetAll(`/stacks?in_use_only=true&per_page=100`);
   const stackTitleBySlug = new Map(allStacks.map(s => [s.slug, s.title]));
-  const inUseSlugs = new Set(inUseStacks.map(s => s.slug));
-  const inScopeSlugs = new Set([...inUseSlugs, ...relevantStackSlugs]);
+  // The platform's managed Legacy stack is always "in use" but holds retired blocks, which are not
+  // company truth: never in scope, even if a "mark stack relevant" correction names it.
+  const inUseSlugs = new Set(inUseStacks.filter(s => !isRetiredStack(s)).map(s => s.slug));
+  const inScopeSlugs = new Set([...inUseSlugs, ...relevantStackSlugs.filter(slug => !isRetiredStack(allStacks.find(s => s.slug === slug)))]);
 
   const blocks = await noanGetAll(`/blocks?in_use_only=true&per_page=100`);
   const coveredStackSlugs = new Set(blocks.map(b => b.stack?.slug));
@@ -288,7 +293,7 @@ async function loadScope(relevantStackSlugs) {
     blocks.push(...supplement);
   }
 
-  const inScopeBlocks = blocks.filter(b => inScopeSlugs.has(b.stack?.slug));
+  const inScopeBlocks = blocks.filter(b => inScopeSlugs.has(b.stack?.slug) && !isRetiredBlock(b));
   return { stackTitleBySlug, inScopeSlugs, inScopeBlocks };
 }
 
@@ -298,14 +303,15 @@ async function loadAllFacts() {
   return byBlockSlug;
 }
 
-async function computeAnomalies(factsByBlock, inScopeBlocks) {
+export async function computeAnomalies(factsByBlock, inScopeBlocks) {
   const inScopeSlugSet = new Set(inScopeBlocks.map(b => b.slug));
   const strayBlockSlugs = [...factsByBlock.keys()].filter(s => !inScopeSlugSet.has(s));
   if (!strayBlockSlugs.length) return [];
   const qs = strayBlockSlugs.map(s => `slug=${encodeURIComponent(s)}`).join("&");
   const resolved = await noanGetAll(`/blocks?${qs}&per_page=100`).catch(() => []);
   const bySlug = new Map(resolved.map(b => [b.slug, b]));
-  return strayBlockSlugs.map(slug => {
+  // A fact on a retired block is where NOAN keeps it on purpose, not a stray: not an anomaly.
+  return strayBlockSlugs.filter(slug => !isRetiredBlock(bySlug.get(slug))).map(slug => {
     const b = bySlug.get(slug);
     return b
       ? { blockSlug: slug, blockTitle: b.title, stackSlug: b.stack?.slug }
@@ -336,9 +342,13 @@ async function main() {
   const nowIso = now.toISOString();
   log(`Fact alignment starting${DRY_RUN ? " (DRY-RUN)" : ""}`);
 
-  const me = await whoAmI();
-  const identityId = me?.identity?.id;
-  if (!identityId) throw new Error("GET /me returned no identity id — can't self-assign the review task.");
+  // The key's owner reviews only when the key is a PERSON's. Under the agent's
+  // own key, self-assigning would hand the review to the agent, and the fleet
+  // would claim it as its own work.
+  const me = await keyIdentity();
+  if (me.error || !me.id) throw new Error(`GET /me failed (${me.error?.message || "no identity id"}); can't tell who reviews the report.`);
+  const identityId = me.human?.id || null;
+  if (me.isAgent) log(`  running under the agent's key (${me.role || "agent"}): the review goes to FACT_ALIGNMENT_REVIEW_ASSIGNEES, not the key's owner`);
 
   // 1. Prior state — soft first-run default (trend/scoping bookkeeping, not an
   // anti-duplicate-send ledger, so a missing row is a legitimate first run, not an abort).
@@ -450,8 +460,9 @@ async function main() {
   });
   const reviewTaskId = created?.task?.id || created?.id;
   if (reviewTaskId) {
-    const assigneeIds = reviewAssignees(identityId, EXTRA_REVIEW_ASSIGNEES);
-    await noanPut(`/tasks/${reviewTaskId}/assignees`, { assigneeIds });
+    let assigneeIds = reviewAssignees(identityId, EXTRA_REVIEW_ASSIGNEES);
+    if (assigneeIds.length) await noanPut(`/tasks/${reviewTaskId}/assignees`, { assigneeIds });
+    else assigneeIds = (await assignResolvedOwner(reviewTaskId, { agent: "fact_alignment", log })).assigned;
     if (factReviewTagId) await noanPut(`/tasks/${reviewTaskId}/tags`, { tagIds: [factReviewTagId] });
     log(`  created review task ${reviewTaskId}, assigned to ${assigneeIds.length} identity/identities${factReviewTagId ? ", tagged fact review" : " (fact review tag missing — left untagged)"}`);
   } else {
