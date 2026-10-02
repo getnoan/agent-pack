@@ -28,8 +28,8 @@ not a configuration convenience bolted on the side; it is the whole idea.
 | **newsletter** | Sends a NOAN asset to every contact carrying a tag, exactly once each | — |
 
 Baseline for everything: a NOAN API key minted under your **NOAN agent** (an Owner
-creates the agent once under Settings → Team → Agent; its keys are under Team →
-Agent → API keys), a key for whichever model you want
+creates the agent once under Settings → Team → Agent; its keys are under
+Settings → API → Agent API Keys), a key for whichever model you want
 answering, and a Resend API key for email. The model does not have to be
 Anthropic's — see *Which model answers* below.
 
@@ -146,7 +146,7 @@ nothing run — until the secrets are there.
 
 | Secret | Needed by |
 |---|---|
-| `NOAN_PERSONAL_API_KEY` | every agent: the **agent's** key (Team → Agent → API keys), so what the agents write is theirs |
+| `NOAN_PERSONAL_API_KEY` | every agent: the **agent's** key (Settings → API → Agent API Keys), so what the agents write is theirs |
 | `RESEND_API_KEY` | every agent |
 | `ANTHROPIC_API_KEY` **or** `LLM_API_KEY` | every agent except the newsletter — either name works, see *Which model answers* |
 | `DATABASE_URL` | every agent except market research |
