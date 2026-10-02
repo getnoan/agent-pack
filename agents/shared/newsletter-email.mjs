@@ -73,6 +73,9 @@ export const NL = {
   // them). Unset: a text wordmark in the company's name and no @font-face;
   // the stacks below fall through to system faces.
   get wordmark() { return (process.env.EMAIL_WORDMARK_URL || "").trim(); },
+  // The banner an issue opens on: the wordmark on the site's field, one image
+  // with its size in its name (`-1200x336.jpg`), like every newsletter picture.
+  get header() { return (process.env.EMAIL_HEADER_URL || "").trim(); },
   get fonts() { return (process.env.EMAIL_FONTS_URL || "").trim().replace(/\/+$/, ""); },
   // Synchronous by design: COMPANY_NAME, else the agent's name, so an unset
   // company never renders an empty wordmark or footer.
@@ -401,6 +404,31 @@ function imageHtml({ alt, url }) {
     + `</td></tr></table>`;
 }
 
+/*
+ * The top of the shell. An issue a reader gets opens on the banner
+ * (EMAIL_HEADER_URL): the wordmark on the site's field, drawn at the column's
+ * width. Its size comes from its name for the same reason a picture's does
+ * (Outlook lays out an <img> by its attributes), so a name without one falls
+ * back to the wordmark rather than rendering at the file's full 2x size. The
+ * alt text is the company's name in the display face, which is what a client
+ * that blocks images shows instead. The internal report keeps the small
+ * wordmark: it is a working email, not an issue.
+ */
+function mastheadHtml({ banner }) {
+  const d = banner && NL.header ? dimsFromUrl(NL.header) : null;
+  if (d) {
+    const w = Math.min(600, d.width), h = Math.round((w * d.height) / d.width);
+    return `<tr><td style="padding:0 0 26px;">
+    <img src="${NL.header.replace(/"/g, "&quot;")}" width="${w}" height="${h}" alt="${escapeHtml(NL.company)}" style="display:block;width:100%;max-width:${w}px;height:auto;border:0;outline:none;text-decoration:none;font-family:${NL_TITLE_FACE};font-size:18px;letter-spacing:0.08em;text-transform:uppercase;color:${NL.ivory92};">
+  </td></tr>`;
+  }
+  return `<tr><td style="padding:0 0 34px;">
+    ${NL.wordmark
+      ? `<img src="${NL.wordmark}" width="96" height="21" alt="${escapeHtml(NL.company)}" style="display:block;width:96px;height:21px;border:0;">`
+      : `<div style="font-family:${NL_TITLE_FACE};font-size:18px;letter-spacing:0.08em;text-transform:uppercase;color:${NL.ivory92};">${escapeHtml(NL.company)}</div>`}
+  </td></tr>`;
+}
+
 const HR_HTML = `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr><td style="padding:14px 0 30px;"><div style="height:1px;line-height:1px;font-size:1px;background:${NL.rim};">&nbsp;</div></td></tr></table>`;
 
 export function blocksToHtml(blocks) {
@@ -503,6 +531,7 @@ export const SLACK_TOKEN = /<[@#!][A-Za-z0-9^|._ -]{1,80}>/g;
  */
 export function renderNewsletterHtml({ title, headline = "", markdown, unsubscribeUrl, preheader = "", dateLabel = "", promote = false }) {
   const display = headline || title;
+  const masthead = mastheadHtml({ banner: !!unsubscribeUrl });
   const body = blocksToHtml(parseIssue(markdown, { promote }).blocks);
   const pre = preheader
     ? `<div style="display:none;max-height:0;overflow:hidden;mso-hide:all;font-size:1px;line-height:1px;color:${NL.ground};">${escapeHtml(preheader)}${"&#847;&zwnj;&nbsp;".repeat(40)}</div>`
@@ -548,11 +577,7 @@ ${pre}
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${NL.ground};">
 <tr><td align="center" style="padding:36px 16px 48px;">
 <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;">
-  <tr><td style="padding:0 0 34px;">
-    ${NL.wordmark
-      ? `<img src="${NL.wordmark}" width="96" height="21" alt="${escapeHtml(NL.company)}" style="display:block;width:96px;height:21px;border:0;">`
-      : `<div style="font-family:${NL_TITLE_FACE};font-size:18px;letter-spacing:0.08em;text-transform:uppercase;color:${NL.ivory92};">${escapeHtml(NL.company)}</div>`}
-  </td></tr>
+  ${masthead}
   <tr><td style="padding:0 0 14px;font-family:${MONO_FACE};font-size:12px;letter-spacing:0.08em;text-transform:uppercase;color:${NL.ivory55};">${eyebrow}</td></tr>
   <tr><td><h1 class="nl-title" style="font-family:${NL_TITLE_FACE};${NL_TITLE_TYPE}color:${NL.ivory92};margin:0 0 26px;">${escapeHtml(display)}</h1></td></tr>
   <tr><td class="nl" style="font-family:${BODY_FACE};color:${NL.ivory72};font-size:17px;line-height:1.6;padding:0 0 10px;">
