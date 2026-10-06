@@ -281,6 +281,46 @@ def noan_headers(cfg):
             "Content-Type": "application/json"}
 
 
+def bot_gate_error(status, me):
+    """Why this key may not run under NOAN_EXPECT_BOT=1, or None when it may.
+
+    The Python twin of expectBot() in agents/noan.mjs: same contract, same rule
+    (identity.role must be "bot"), so a step that sets NOAN_EXPECT_BOT refuses a
+    person's key whichever language the step runs. Without it, a person's key in
+    this step's secret would write under that person's name with nothing to say
+    so. The two Python copies are kept identical by a test in the source repo.
+    """
+    if status in (401, 403):
+        return (f"NOAN_EXPECT_BOT=1 but the key was rejected ({status} {(me or {}).get('message') or ''}); "
+                "it is revoked, mistyped or not a NOAN key")
+    if status != 200 or not isinstance(me, dict):
+        return f"NOAN_EXPECT_BOT=1 but GET /me returned {status}; refusing to run under an unconfirmed identity"
+    ident = me.get("identity") or {}
+    role = ident.get("role")
+    if role != "bot":
+        who = ident.get("email") or ident.get("id") or "an unknown identity"
+        return (f"NOAN_EXPECT_BOT=1 but this key belongs to {who} (role {role or 'none'}), not the workspace's agent. "
+                "Everything it wrote would be attributed to that person. Mint the key under the agent "
+                "(Settings -> API -> Agent API Keys) and put it in the workflow's secret, or unset "
+                "NOAN_EXPECT_BOT if a person's key is intended.")
+    return None
+
+
+def expect_bot(cfg):
+    """Exit before any NOAN read or write when NOAN_EXPECT_BOT=1 and the key is not the agent's."""
+    if os.environ.get("NOAN_EXPECT_BOT") != "1":
+        return
+    try:
+        status, me = http("GET", f"{cfg['noan_base']}/me", noan_headers(cfg))
+    except RuntimeError as e:
+        status, me = f"unreachable ({e})", None
+    err = bot_gate_error(status, me)
+    if err:
+        log(f"FATAL: {err}")
+        print(f"::error::deck.py: {err}", flush=True)
+        sys.exit(1)
+
+
 def find_task(cfg, task_id):
     """No GET /tasks/{id} exists — page the list and match by id."""
     page = 1
@@ -2108,6 +2148,7 @@ def main():
     cfg = load_cfg()
     if not cfg.get("noan_api_key") or not cfg.get("anthropic_api_key"):
         log("FATAL: no usable config (config.json / config.defaults.json + env keys)"); sys.exit(1)
+    expect_bot(cfg)
     today = datetime.date.today().isoformat()
     send_email = not args.no_email
 

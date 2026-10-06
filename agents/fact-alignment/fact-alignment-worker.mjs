@@ -49,7 +49,7 @@ import { respondLine } from "../shared/respond-by.mjs";
 import { sendReportEmail } from "../shared/resend.mjs";
 import { peekState, saveLocalState } from "../shared/state-local.mjs";
 import { renderReportEmailHtml } from "../shared/markdown-email.mjs";
-import { runFactAlignmentAgent, renderReport, renderReportForNote, genuineCandidates, buildManifest, manifestWindowKey } from "./fact-alignment-agent.mjs";
+import { runFactAlignmentAgent, renderReport, renderReportForNote, genuineCandidates, triageCoverage, buildManifest, manifestWindowKey } from "./fact-alignment-agent.mjs";
 import { isRetiredStack, isRetiredBlock } from "./retired-stack.mjs";
 
 const CONFIG_SLUG = process.env.FACT_ALIGNMENT_CONFIG_BLOCK_SLUG;
@@ -396,7 +396,10 @@ async function main() {
     brain,
   }, { log });
   const candidates = genuineCandidates(result);
-  log(`  ${result.gaps.length} gap(s) drafted, ${result.contradictions.length} contradiction(s), ${result.overlaps.length} overlap(s), ${candidates.length} genuine candidate(s) (${result.candidates.length} reviewed)`);
+  const coverage = triageCoverage(result, { taskCount: genericCandidateTasks.length, noteCount: notesCandidates.length });
+  log(`  ${result.gaps.length} gap(s) drafted, ${result.contradictions.length} contradiction(s), ${result.overlaps.length} overlap(s), ${candidates.length} genuine candidate(s) (${coverage.reviewed} of ${genericCandidateTasks.length + notesCandidates.length} reviewed)`);
+  if (coverage.missing.length) log(`  warn: the model returned no verdict for ${coverage.missing.length} candidate(s): ${coverage.missing.slice(0, 20).join(", ")}${coverage.missing.length > 20 ? ", ..." : ""}`);
+  if (coverage.unknown.length) log(`  warn: the model answered ref(s) it was never given: ${coverage.unknown.slice(0, 20).join(", ")}`);
 
   // 5. Deliver
   const factReviewTagId = await findTagId("fact review").catch(() => null);

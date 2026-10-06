@@ -59,14 +59,14 @@ import {
   senderDisplayName,
   parkForHuman,
   taskHasTag,
-  unparkTask, assignResolvedOwner } from "../shared/noan.mjs";
+  unparkTask, assignResolvedOwner, companyName } from "../shared/noan.mjs";
 import { assertModelKey } from "../shared/anthropic.mjs";
 import { planQueuedTask, contactCreatePlan, warnUnregisteredTriggers } from "./command-queue.mjs";
 import { runReplyAgent } from "./reply-agent.mjs";
 import { runCommandAgent } from "./command-agent.mjs";
 import { runSupportAgent } from "./cs-agent.mjs";
 import { interpretInit, interpretReply, interpretCustomerAsk } from "./schedule-agent.mjs";
-import { freeBusy, computeSlots, slotStillFree, createEvent } from "./google-cal.mjs";
+import { freeBusy, computeSlots, slotStillFree, createEvent, calendarConfigured, CALENDAR_SECRET } from "./google-cal.mjs";
 import { parseScheduleFact } from "./slots.mjs";
 import { sendEmail } from "../shared/resend.mjs";
 import { supportScanCandidates, supportTaskContactId, supportCommentRearm } from "./support-scan.mjs";
@@ -74,6 +74,10 @@ import { steeringComments, normalizeComments, latestCursor, renderComments } fro
 import { loadLocalState, saveLocalState, peekState } from "../shared/state-local.mjs";
 import { commanderAuthVerdict } from "./commander-auth.mjs";
 import { loadLane } from "./optional-lane.mjs";
+import {
+  nameMatchUserContact, needsNotice, withNotice, redirectReply, courseAccountReply,
+  redirectedRecently, claimsAccountAction,
+} from "./sender-registration.mjs";
 
 /* Business lanes that ride on this worker but are not part of the six-agent
  * pack: re-engagement decks, pre-call briefs, the course, prospector digests.
@@ -83,8 +87,11 @@ import { loadLane } from "./optional-lane.mjs";
 const { hasOfferedThread, handleReengageReply } = await loadLane("reengage-reply", { hasOfferedThread: () => false });
 const { hasBriefThread, handleBriefReply } = await loadLane("brief-reply", { hasBriefThread: () => false });
 const { hasGrantInfoThread, handleGrantReply } = await loadLane("grant-reply", { hasGrantInfoThread: () => false });
-const { hasCourseThread, handleCourseReply, maybeCourseStartAsk } = await loadLane("course-reply",
-  { hasCourseThread: () => false, maybeCourseStartAsk: async () => ({ handled: false }) });
+const { hasCourseThread, handleCourseReply, maybeCourseStartAsk, isCourseStartAsk } = await loadLane("course-reply",
+  { hasCourseThread: () => false, maybeCourseStartAsk: async () => ({ handled: false }), isCourseStartAsk: async () => false });
+// Which addresses sign in to NOAN (our app DB). Absent in the pack: null = unknown, so the
+// "not on record" notice is never sent there (sender-registration.mjs needsNotice).
+const { lookupLogins } = await loadLane("account-lookup", { lookupLogins: async () => null });
 const { matchDigestSubject, handleProspectorDigestReply } = await loadLane("prospector-replies", { matchDigestSubject: () => null });
 const { hasImplementationThread, handleImplementationReply, maybeImplementationStartAsk, intakeOn } = await loadLane("implement-intake",
   { intakeOn: () => false, hasImplementationThread: async () => false, maybeImplementationStartAsk: async () => ({ handled: false }) });
@@ -185,6 +192,12 @@ function pruneState(s) {
     const day = key.slice(key.lastIndexOf("|") + 1);
     if (day < dayCutoff) delete s.sent[key];
   }
+  // sender-registration ledgers: one ISO timestamp per address, read against 30- and 14-day
+  // windows, so anything older than PROCESSED_KEEP_DAYS * 2 can never matter again
+  const regCutoff = new Date(Date.now() - PROCESSED_KEEP_DAYS * 2 * 86400_000).toISOString();
+  for (const k of ["unregNotice", "unregRedirect"]) {
+    for (const [email, at] of Object.entries(s[k] || {})) if (at < regCutoff) delete s[k][email];
+  }
   return s;
 }
 
@@ -236,6 +249,38 @@ function badLinks(html, text) {
   const hosts = new Set(allowedLinks().map(u => { try { return new URL(u).hostname.toLowerCase(); } catch { return null; } }).filter(Boolean));
   return urls.filter(u => {
     try { return !hosts.has(new URL(u.replace(/[.,;:!?]+$/, "")).hostname.toLowerCase()); } catch { return true; }
+  });
+}
+
+/* ---------------- sender registration (sender-registration.mjs) ---------------- */
+
+// One app-DB read per sender per run; null = unknown (lane absent or the read failed).
+const _logins = new Map();
+async function loginsFor(email) {
+  if (!_logins.has(email)) _logins.set(email, await lookupLogins([email], { log }));
+  return _logins.get(email);
+}
+
+/** The draft, plus the "not on record" line when this sender should get it. Records the notice
+ *  on `state` so it is said once per NOTICE_EVERY_DAYS, never on every message. */
+async function maybeNotice(draft, { contact, senderEmail, state }) {
+  state.unregNotice = state.unregNotice || {};
+  const logins = await loginsFor(senderEmail);
+  if (!needsNotice({ contact, senderEmail, logins, lastNoticeAt: state.unregNotice[senderEmail] })) return draft;
+  state.unregNotice[senderEmail] = new Date().toISOString();
+  log(`  ${senderEmail} is not a NOAN login and has no tags: adding the not-on-record line`);
+  return withNotice(draft, await companyName(), AGENT_NAME);
+}
+
+/** A fixed, model-free reply in the sender's thread. */
+async function sendFixedReply({ meta, senderEmail, reply, kind }) {
+  const subjectBase = /^re:/i.test(meta.subject || "") ? meta.subject : `Re: ${meta.subject || "your message"}`;
+  return sendEmail({
+    to: TEST_RECIPIENT || senderEmail,
+    subject: TEST_RECIPIENT ? `[TEST → ${senderEmail}] ${subjectBase}` : subjectBase,
+    html: reply.html, text: reply.text,
+    headers: { "In-Reply-To": meta.message_id },
+    idempotencyKey: `${AGENT_NAME}:${kind}:${meta.id}`,
   });
 }
 
@@ -389,7 +434,7 @@ async function escalate({ inbound, body, contact, reason, sourceTask = null }) {
       `<strong>Reason:</strong> ${reason}</p>` +
       `<hr><p><strong>Their message:</strong></p><p>${(body || "(empty)").replace(/\n/g, "<br>")}</p>` +
       (sourceTask
-        ? `<p>The task is parked on the NOAN board: <strong>${String(sourceTask.title || sourceTask.id).slice(0, 120)}</strong> (${sourceTask.id}). Fix what the reason says, then re-assign ${AGENT_NAME} to it and ${pronouns().subj} picks it up on ${pronouns().poss} next poll.</p>`
+        ? `<p>The task is parked on the NOAN board: <strong>${String(sourceTask.title || sourceTask.id).slice(0, 120)}</strong> (${sourceTask.id}). Fix what the reason says, then re-assign ${AGENT_NAME} to it and ${pronouns().subj} ${pronouns().verb("pick")} it up on ${pronouns().poss} next poll.</p>`
         : `<p>Reply directly to them at: ${senderEmail}</p>`),
     idempotencyKey: `${AGENT_NAME}:escalate:${inbound.id}`,
   });
@@ -929,6 +974,17 @@ async function handleSupportTurn({ meta, body, senderEmail, contact, state, mark
     return true;
   }
 
+  // The support agent has no tool that enrolls, signs up, upgrades or refunds anyone, so a draft
+  // saying it did is always false. On 2026-10-02 one told a customer "signed you up" for the
+  // email course with nothing set up (sender-registration.mjs claimsAccountAction).
+  if (claimsAccountAction(verdict.reply_text) || claimsAccountAction(stripHtml(verdict.reply_html || ""))) {
+    await escalate({ inbound: meta, body, contact, reason: `Support draft claims an enrollment or account change, which ${AGENT_NAME} cannot make. A human should reply. Draft: ${(verdict.reply_text || "").slice(0, 400)}` });
+    if (kase) kase.status = "escalated";
+    mark("cs-escalated", { reason: "account-claim" });
+    log("  draft claims an account action → escalated");
+    return true;
+  }
+
   // a simple non-issue question answered in one turn: send + memo, but no case,
   // no brief, no tasks — the lightweight Q&A behavior customers had before
   const quickAnswer = !kase && !verdict.is_issue && verdict.action === "resolve";
@@ -951,10 +1007,11 @@ async function handleSupportTurn({ meta, body, senderEmail, contact, state, mark
   if (verdict.reply_html) {
     const subj = kase?.subject || meta.subject || "";
     const subjectBase = /^re:/i.test(subj) ? subj : `Re: ${subj || "your message"}`;
+    const out = await maybeNotice({ html: verdict.reply_html, text: verdict.reply_text }, { contact, senderEmail, state });
     await sendEmail({
       to: TEST_RECIPIENT || contact.email,
       subject: TEST_RECIPIENT ? `[TEST → ${contact.email}] ${subjectBase}` : subjectBase,
-      html: verdict.reply_html, text: verdict.reply_text,
+      html: out.html, text: out.text,
       headers: { "In-Reply-To": meta.message_id },
       idempotencyKey: `${AGENT_NAME}:cs-reply:${meta.id}`,
     });
@@ -1409,6 +1466,9 @@ async function main() {
   // would otherwise fail silently — an escalation with nowhere to go is lost mail.
   requireEnv("ESCALATE_TO", "Where this agent forwards anything it cannot answer itself.");
   log(`${AGENT_NAME} reply agent starting · mode: ${DRY_RUN ? "DRY-RUN" : TEST_RECIPIENT ? `TEST → ${TEST_RECIPIENT}` : "LIVE"} · escalations → ${ESCALATE_TO}`);
+  // The pack ships this lane to people who may not have connected a calendar. Say so once
+  // per run; meeting asks then get the handling below instead of a throw per email.
+  if (!calendarConfigured()) log(`scheduling lane: not configured yet: ${CALENDAR_SECRET} — meeting asks are answered without booking`);
   const brain = await loadBrain();
   const state = await loadState();
 
@@ -1514,6 +1574,20 @@ async function main() {
             }
             await saveState(state); continue;
           }
+          if (init?.is_scheduling && !calendarConfigured()) {
+            // No calendar to read. Until 2026-10-03 freeBusy threw here, the run left the
+            // email "unprocessed for next run", and every later run retried it while the
+            // teammate heard nothing. Tell them once and mark it handled.
+            await notifyRequester({
+              requestedBy: senderEmail,
+              subject: `[${AGENT_NAME}] scheduling isn't set up yet`,
+              html: `<p>You asked me to set up a meeting, but no Google Calendar is connected, so I can't see free time or send an invite. Please arrange this one yourself.</p><p>To turn scheduling on, add a Google service account with domain-wide delegation as the <code>${CALENDAR_SECRET}</code> secret (see the README).</p><p>not configured yet: ${CALENDAR_SECRET}</p>`,
+              text: `You asked me to set up a meeting, but no Google Calendar is connected. Please arrange it yourself. not configured yet: ${CALENDAR_SECRET}`,
+              key: `${AGENT_NAME}:sched-unconfigured:${meta.id}`,
+            });
+            mark("schedule-not-configured");
+            await saveState(state); continue;
+          }
           if (init?.is_scheduling) {
             const handled = await handleScheduleInit({ meta, body, senderEmail, externals, init, state, mark });
             if (handled) { await saveState(state); continue; }
@@ -1540,6 +1614,39 @@ async function main() {
       // the record came from. A failed create is the one thing that still
       // escalates here: better a parked email than a reply to nobody on record.
       let contact = byEmail.get(senderEmail) || null;
+
+      // Probably a subscriber writing from a second address (sender-registration.mjs): same full
+      // name as a Free/Subscriber contact on another address. Whether this address can sign in
+      // does not change it: on 2026-10-02 the second address was itself a login (a member seat in
+      // someone else's workspace) while the subscription sat on the first. Create NO contact (one person must not count as two accounts) and ask them to
+      // write from the address they signed up with. Never name that address: they have not
+      // proven who they are. A second email inside REDIRECT_WINDOW_DAYS means they want to use
+      // this one, which is a human's call, not a second identical reply.
+      if (!contact) {
+        const twin = nameMatchUserContact(contacts, senderEmail, senderDisplayName(meta.from));
+        if (twin) {
+          state.unregRedirect = state.unregRedirect || {};
+          if (redirectedRecently(state.unregRedirect[senderEmail])) {
+            await escalate({ inbound: meta, body, contact: twin, reason: `${senderEmail} wrote again after being asked to use the address they signed up with. The name matches ${twin.name}'s contact (${twin.email}). A human should decide whether this is the same person and, if so, which address belongs on the record. No contact was created.` });
+            mark("escalated", { reason: "second-address-repeat" });
+            log(`  ${senderEmail} matches ${twin.id} by name and was redirected recently → escalated`);
+            await saveState(state); continue;
+          }
+          const sent = await sendFixedReply({ meta, senderEmail, reply: redirectReply({ agentName: AGENT_NAME, company: await companyName() }), kind: "second-address" });
+          state.unregRedirect[senderEmail] = new Date().toISOString();
+          try {
+            await addContactMemo(twin.id,
+              `[${AGENT_NAME}] Possible second address — ${today}\n` +
+              `An email from ${meta.from}, an address with no contact of its own, matches this contact's name.\n` +
+              `Subject: ${meta.subject || "(no subject)"}\nTheir message: ${(body || "").slice(0, 400)}\n\n` +
+              `No contact was created. They were asked to write from the address they signed up with, without being told which one (Resend ${sent?.id || "n/a"}). If it is the same person and they want this address on the record, change the email on this contact.`);
+          } catch (e) { log(`  warn: second-address memo failed: ${e.message}`); }
+          mark("second-address-redirect", { twin: twin.id, resend: sent?.id });
+          log(`  ${senderEmail} matches ${twin.id} (${twin.name}) by name → asked to use their signed-up address, no contact created`);
+          await saveState(state); continue;
+        }
+      }
+
       if (!contact) {
         let found;
         try {
@@ -1655,6 +1762,24 @@ async function main() {
         // fallthrough: not a course ask — normal routing continues
       }
 
+      // …while a course request from an address with NO Free/Subscriber record is told the
+      // course runs on the address they signed up with. Before this it fell through to the
+      // support reply, which on 2026-10-02 answered "signed you up" with nothing set up.
+      // A failed classify answers false, so this can only ever divert a clear course ask.
+      if (COURSE_ON && !hasCourseThread(senderEmail) && !isUserContact(contact) &&
+          (await isCourseStartAsk({ body, contact }))) {
+        const sent = await sendFixedReply({ meta, senderEmail, reply: courseAccountReply({ agentName: AGENT_NAME, company: await companyName() }), kind: "course-not-registered" });
+        try {
+          await addContactMemo(contact.id,
+            `[${AGENT_NAME}] Asked for the email course from an address with no Free/Subscriber record — ${today}\n` +
+            `Their message: ${(body || "").slice(0, 400)}\n` +
+            `Told the course runs on the address they signed up with, and to email from that one (Resend ${sent?.id || "n/a"}). Nothing was enrolled.`);
+        } catch (e) { log(`  warn: memo failed: ${e.message}`); }
+        mark("course-not-registered", { resend: sent?.id });
+        log(`  course ask from ${senderEmail} (no Free/Subscriber tag) → asked to write from their signed-up address`);
+        await saveState(state); continue;
+      }
+
       // implementation workstream (IMPLEMENTATION-PLAN §13): the headless
       // intake. Same placement and the same reasons as the course above — it
       // must outrank the customer-success path, which would otherwise answer
@@ -1689,7 +1814,9 @@ async function main() {
       // ask got escalated instead of scheduled) Keyword pre-filter, then a
       // conservative classifier; on a clear ask, offer slots from the named
       // teammate's calendar (default owner) and enter the offered-thread flow.
-      if (MEETING_RX.test(body)) {
+      // With no calendar connected there are no slots to offer: skip the classifier and let
+      // the ask route as ordinary mail, which answers it or hands it to a human.
+      if (calendarConfigured() && MEETING_RX.test(body)) {
         try {
           const ask = await interpretCustomerAsk({ inbound: meta, body, teammates: [...COMMANDERS] });
           if (ask?.wants_meeting) {
@@ -1750,12 +1877,21 @@ async function main() {
         await saveState(state); continue;
       }
 
+      // same guard as the support path: this agent cannot enroll, upgrade or sign anyone up
+      if (claimsAccountAction(verdict.text) || claimsAccountAction(stripHtml(verdict.html || ""))) {
+        await escalate({ inbound: meta, body, contact, reason: `Draft claims an enrollment or account change, which ${AGENT_NAME} cannot make. A human should reply. Draft: ${(verdict.text || "").slice(0, 400)}` });
+        mark("escalated", { reason: "account-claim" });
+        log("  draft claims an account action → escalated");
+        await saveState(state); continue;
+      }
+
+      const draft = await maybeNotice({ html: verdict.html, text: verdict.text }, { contact, senderEmail, state });
       const to = TEST_RECIPIENT || senderEmail;
       const subjectBase = /^re:/i.test(meta.subject || "") ? meta.subject : `Re: ${meta.subject || "your message"}`;
       const subject = TEST_RECIPIENT ? `[TEST → ${senderEmail}] ${subjectBase}` : subjectBase;
 
       const sendResult = await sendEmail({
-        to, subject, html: verdict.html, text: verdict.text,
+        to, subject, html: draft.html, text: draft.text,
         headers: { "In-Reply-To": meta.message_id },   // thread it
         idempotencyKey: `${AGENT_NAME}:reply:${meta.id}`,
       });
@@ -1763,7 +1899,7 @@ async function main() {
       try {
         await addContactMemo(contact.id, `[${AGENT_NAME}] Replied in-thread — ${today}\n` +
             `Their message: ${body.slice(0, 500)}\n\n` +
-            `${AGENT_NAME}'s reply (Resend ${sendResult?.id || "n/a"}):\n${verdict.text || stripHtml(verdict.html)}` +
+            `${AGENT_NAME}'s reply (Resend ${sendResult?.id || "n/a"}):\n${draft.text || stripHtml(draft.html)}` +
             (TEST_RECIPIENT ? `\n(TEST — redirected to ${TEST_RECIPIENT})` : ``));
       } catch (e) { log(`  warn: memo failed: ${e.message}`); }
 

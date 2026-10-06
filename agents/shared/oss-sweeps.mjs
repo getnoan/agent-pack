@@ -94,7 +94,7 @@ export const SHIPPED_TESTS = [
   "test-noan-getall-filters.mjs", "test-resend-env-guard.mjs", "test-support-scan.mjs",
   "test-fact-alignment-notes-scan.mjs", "test-fact-alignment-capture-intake.mjs",
   "test-weekly-report-memos.mjs", "test-weekly-report-notes-section.mjs",
-  "test-llm-endpoint-config.mjs", "test-deck-model-endpoint.mjs",
+  "test-llm-endpoint-config.mjs", "test-deck-model-endpoint.mjs", "test-scheduling-not-configured.mjs",
 ];
 
 /** Pointers into private history that mean nothing to a stranger, WITHOUT the id half.
