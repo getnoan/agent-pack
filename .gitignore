@@ -8,3 +8,7 @@ state/
 *.pdf
 __pycache__/
 *.pyc
+# Google Calendar credentials for the scheduling lane: private keys, never committed.
+google-service-account.json
+google-oauth-client.json
+google-token.json
