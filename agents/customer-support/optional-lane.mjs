@@ -32,7 +32,7 @@ import { fileURLToPath } from "node:url";
  * checks that too, so a lane cannot be added to one side and not the other.
  */
 export const BUSINESS_LANES = Object.freeze([
-  "brief-agent.mjs", "brief-core.mjs", "brief-reply.mjs", "changelog.mjs", "ci-alert.mjs",
+  "account-lookup.mjs", "brief-agent.mjs", "brief-core.mjs", "brief-reply.mjs", "changelog.mjs", "ci-alert.mjs",
   "course-agent.mjs", "course-reply.mjs", "course-shared.mjs", "grant-activation.mjs", "grant-reply.mjs", "implement-intake.mjs",
   "prospector-replies.mjs", "reengage-reply.mjs",
 ]);
