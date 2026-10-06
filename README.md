@@ -23,7 +23,7 @@ not a configuration convenience bolted on the side; it is the whole idea.
 | **weekly activity report** | Narrates a week of your NOAN activity — tasks, facts, assets, notes — as a retrospective digest | — |
 | **fact alignment** | Audits your fact base for gaps, contradictions and overlap. Recommends; never writes a business fact | — |
 | **market research refresh** | Researches your market and refreshes your Market Research facts | Firecrawl |
-| **customer support** | Answers inbound email from your facts, or escalates to a human | — |
+| **customer support** | Answers inbound email from your facts, or escalates to a human. Can also book meetings | Google Workspace, only for booking (see *Scheduling meetings*) |
 | **sales deck** | Builds a personalised deck for a named prospect, renders a PDF, sends it or parks it for approval | headless Chrome, object storage |
 | **newsletter** | Sends a NOAN asset to every contact carrying a tag, exactly once each | — |
 
@@ -153,6 +153,7 @@ nothing run — until the secrets are there.
 | `FIRECRAWL_API_KEY` | market research |
 | `NEWSLETTER_UNSUB_SECRET` | newsletter |
 | `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` | sales deck, only if you want send-later |
+| `GOOGLE_SERVICE_ACCOUNT_JSON` | customer support, only to book meetings (see *Scheduling meetings*) |
 
 **Variables** (plain configuration): `MAIL_FROM`, `REPLY_TO`, `ESCALATE_TO`,
 `STATE_BACKEND`, `ANTHROPIC_BASE_URL` and the `*_MODEL` ids (see *Which model
@@ -164,6 +165,46 @@ for market research, and the people work is handed to: `PARK_ASSIGNEES_CS`,
 `PARK_ASSIGNEES_SALES`, `PARK_ASSIGNEES_ENG`, `HUMAN_IDENTITIES`,
 `FACT_ALIGNMENT_REVIEW_ASSIGNEES` and `REPLY_HUMAN_ASSIGNEES`. Every workflow forwards them; leave one unset and that
 agent takes the cautious default.
+
+### Scheduling meetings
+
+Customer support can book meetings. A teammate CCs the agent on a thread with
+someone outside, or a customer writes asking to meet, and the agent offers free
+slots from a calendar, then books the one they pick and sends the invite.
+
+This is the only part of the pack that needs Google, and it is optional. Without
+it, every run logs `scheduling lane: not configured yet: GOOGLE_SERVICE_ACCOUNT_JSON`
+and support works as usual. A teammate who asks the agent to book is told by email
+that scheduling is off, once per request, and a customer's request is answered as
+ordinary mail.
+
+To turn it on you need **Google Workspace**: the pack connects through a service
+account with domain-wide delegation, which only Workspace can grant.
+
+1. In Google Cloud Console, create a project, enable the **Google Calendar API**,
+   create a **service account**, and download its JSON key.
+2. In the Workspace Admin console, under **Security → Access and data control → API
+   controls → Domain-wide delegation**, add the service account's client id with
+   these scopes:
+   `https://www.googleapis.com/auth/calendar.events`,
+   `https://www.googleapis.com/auth/calendar.freebusy`.
+   Optionally add `https://www.googleapis.com/auth/calendar.settings.readonly`, so
+   that offered slots follow each person's own Calendar time zone.
+   Delegation lets the agent read and book the calendar of whoever asked, so the
+   event lands on their calendar with them as the organizer.
+3. Add the whole JSON file as the secret `GOOGLE_SERVICE_ACCOUNT_JSON`. Running
+   locally instead? Save it as `agents/customer-support/google-service-account.json`;
+   `.gitignore` already excludes it.
+4. Set the variable `SCHEDULE_DEFAULT_OWNER` to the address whose calendar a
+   customer's request is booked on, unless they name someone in `COMMANDERS`.
+   Leave it unset and a customer's request is booked only when it names one of
+   them; the rest are answered as ordinary mail.
+5. Optional: `SCHEDULE_TIMEZONE` (default `UTC`) and `SCHEDULE_CONFIG_BLOCK_SLUG`, a
+   NOAN block with your working hours, meeting length and notice. See `.env.example`.
+
+The meeting-booking pages in [verity-meetings](https://github.com/getnoan/verity-meetings)
+use the same kind of service account, under the name `GOOGLE_SA_JSON`. One key,
+with the scopes above, serves both.
 
 ### Which model answers
 

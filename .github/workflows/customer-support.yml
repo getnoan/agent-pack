@@ -60,6 +60,21 @@ jobs:
             echo "::notice::This repository is not configured yet. Add the secrets named above under Settings → Secrets and variables → Actions. Nothing ran."
           fi
           echo "ready=$ready" >> "$GITHUB_OUTPUT"
+      # Optional: the Google Calendar credential for the scheduling lane. Not part of the
+      # check above on purpose, because support runs fine without it. With it absent, the
+      # worker logs "scheduling lane: not configured yet: GOOGLE_SERVICE_ACCOUNT_JSON",
+      # tells a teammate who asks it to book that scheduling is off, and answers a
+      # customer's meeting request as ordinary mail. google-cal.mjs reads the file from its
+      # own folder, so it is written there.
+      - name: Google Calendar credential
+        if: steps.configured.outputs.ready == '1'
+        env:
+          GOOGLE_SA_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+        run: |
+          if [ -n "$GOOGLE_SA_JSON" ]; then
+            printf '%s' "$GOOGLE_SA_JSON" > agents/customer-support/google-service-account.json
+            chmod 600 agents/customer-support/google-service-account.json
+          fi
       - name: Run
         if: steps.configured.outputs.ready == '1'
         run: node agents/customer-support/reply-worker.mjs
@@ -83,6 +98,8 @@ jobs:
           EMAIL_WORDMARK_URL: ${{ vars.EMAIL_WORDMARK_URL }}
           EMAIL_FONTS_URL: ${{ vars.EMAIL_FONTS_URL }}
           SCHEDULE_TIMEZONE: ${{ vars.SCHEDULE_TIMEZONE }}
+          SCHEDULE_DEFAULT_OWNER: ${{ vars.SCHEDULE_DEFAULT_OWNER }}
+          SCHEDULE_CONFIG_BLOCK_SLUG: ${{ vars.SCHEDULE_CONFIG_BLOCK_SLUG }}
           NOAN_PERSONAL_API_KEY: ${{ secrets.NOAN_PERSONAL_API_KEY }}
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
           MAIL_FROM: ${{ vars.MAIL_FROM }}
