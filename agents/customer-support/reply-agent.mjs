@@ -112,6 +112,7 @@ function buildSystemPrompt(brain, agentName, company) {
     `- Ground every claim in NOAN facts via get_facts. Ungroundable → escalate.`,
     linkRule(),
     `- Never promise, commit, discount, refund, or apologise on behalf of the company.`,
+    `- You cannot enroll anyone in the course, sign them up, or change their plan, tags or account, so never say you have ("you're enrolled", "I've signed you up"). The system escalates any draft that does.`,
     `- You do NOT send email. Call submit_reply and the system acts on it.`,
   ].join("");
 }

@@ -96,7 +96,7 @@ import { noanGet, noanGetAll, noanPost, noanPatch, allTasksOnce, findTagId, find
 import { buildDetails, appendRun, runLine, runUrl } from "./task-run-lines.mjs";
 import { verdictFromComments, approvalBindingsOk } from "./newsletter-approval.mjs";
 import { defaultCommanders, normalizeComments } from "../shared/task-comments.mjs";
-import { sendEmail, sendBatch, BATCH_MAX } from "../shared/resend.mjs";
+import { sendEmail, sendBatch, cancelEmail, BATCH_MAX } from "../shared/resend.mjs";
 import { loadLocalState, saveLocalState } from "../shared/state-local.mjs";
 import { renderNewsletterHtml, parseIssue, blocksToText, stripCaptureLines, SLACK_TOKEN } from "../shared/newsletter-email.mjs";
 import { setUsageContext } from "../shared/usage-log.mjs";
@@ -108,11 +108,16 @@ export const ISSUE_TAG = "Newsletter";
 export const UNSUBSCRIBED_TAG = "Unsubscribed";
 /** Asset control tags for the poll trigger. Neither is ever an audience. */
 export const CONTROL_TAGS = { test: "Test", send: "Send" };
+/** Marks THE weekly issue: only an issue carrying it waits for the send window
+ *  (NEWSLETTER_SEND_AT). Any other issue, a one-off for a big release say, goes
+ *  out as soon as it is approved. Not an audience tag, so audienceFromAsset
+ *  skips it like the control tags. */
+export const WEEKLY_TAG = "Weekly";
 const PAGE_SIZES = [100, 75, 50, 25];
 // Same pattern network-integrity uses to spot test/placeholder contacts.
 export const TEST_PATTERN = /\+(test|new|trial|ball)|(^|[^a-z])(test|placeholder)([^a-z]|$)/i;
 const EMAIL_RX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const MODES = new Set(["dry-run", "test", "live", "poll"]);
+const MODES = new Set(["dry-run", "test", "live", "poll", "cancel"]);
 const UUID_RX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 
 const log = (...a) => console.log(...a);
@@ -214,7 +219,8 @@ export function issueFromAsset(hit) {
   const { promoted, buttons, images, inlineImages } = parseIssue(body, { promote: true });
   const bad = imageProblems(images, inlineImages, process.env.NEWSLETTER_IMAGE_BASE || "");
   if (bad.length) return { error: `the body has ${bad.length} image problem(s): ${bad.join("; ")}` };
-  return { asset: hit, id: stableId(hit), version: versionOf(hit), title, description, body, stripped, promoted, buttons, images, dateLabel: dateLabelOf(hit) };
+  const weekly = (hit.tags || []).some(t => lower(t?.name) === lower(WEEKLY_TAG));
+  return { asset: hit, id: stableId(hit), version: versionOf(hit), title, description, body, stripped, promoted, buttons, images, dateLabel: dateLabelOf(hit), weekly };
 }
 
 /*
@@ -360,7 +366,7 @@ export function contactTagCounts(contacts) {
  * that are not control tags, exactly one must be carried by at least one
  * contact. None or several is a refusal with a reason a person can act on.
  */
-export function audienceFromAsset(asset, counts, { controlTags = [ISSUE_TAG, CONTROL_TAGS.test, CONTROL_TAGS.send] } = {}) {
+export function audienceFromAsset(asset, counts, { controlTags = [ISSUE_TAG, CONTROL_TAGS.test, CONTROL_TAGS.send, WEEKLY_TAG] } = {}) {
   const control = new Set(controlTags.map(lower));
   const names = (asset.tags || []).map(t => t?.name).filter(n => n && !control.has(lower(n)));
   const candidates = names.filter(n => (counts.get(lower(n)) || 0) > 0);
@@ -369,6 +375,88 @@ export function audienceFromAsset(asset, counts, { controlTags = [ISSUE_TAG, CON
     return { error: `no audience: ${names.length ? `none of the asset's other tags (${names.join(", ")}) is carried by any contact` : "the asset carries no tag besides Newsletter and the control tags"}. Add the audience tag (Subscriber, say) to the asset.` };
   }
   return { error: `ambiguous audience: ${candidates.join(", ")} are all carried by contacts. Keep exactly one audience tag on the asset.` };
+}
+
+/* ---------------- the send window (NEWSLETTER_SEND_AT) ----------------
+ *
+ * The weekly issue (tagged WEEKLY_TAG) goes out at one fixed moment (the
+ * fleet's is Sunday 09:00 New York, set in config), whenever it was approved.
+ * Every other issue goes as soon as it is approved, as before. An approval or a Send tag on Friday or
+ * Saturday hands the emails to Resend at once with `scheduled_at` set to that
+ * moment, so delivery is exact and does not depend on when a poll happens to
+ * run. An issue approved later on the window's own day (after 09:00 Sunday)
+ * goes immediately rather than waiting a week: it is still that Sunday's issue.
+ * The button's live mode is "send now" and never scheduled.
+ *
+ * Spec: "<weekday> <HH:MM> <IANA zone>", e.g. "sun 09:00 America/New_York".
+ * Empty means no window: every send is immediate, the behaviour before this.
+ */
+const WEEKDAYS = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
+
+export function parseSendAt(spec) {
+  const s = String(spec || "").trim();
+  if (!s) return null;
+  const m = s.match(/^([a-z]{3})[a-z]*\s+(\d{1,2}):(\d{2})\s+(\S+)$/i);
+  if (!m) throw new Error(`NEWSLETTER_SEND_AT must look like "sun 09:00 America/New_York", got "${s}"`);
+  const weekday = WEEKDAYS.indexOf(m[1].toLowerCase());
+  const hour = Number(m[2]), minute = Number(m[3]), tz = m[4];
+  if (weekday < 0 || hour > 23 || minute > 59) throw new Error(`NEWSLETTER_SEND_AT has an impossible day or time: "${s}"`);
+  try { new Intl.DateTimeFormat("en-US", { timeZone: tz }); } catch { throw new Error(`NEWSLETTER_SEND_AT names an unknown time zone: "${tz}"`); }
+  return { weekday, hour, minute, tz };
+}
+
+/** The wall clock in `tz` at instant `ms`: { y, mo, d, h, mi, wd }. */
+function wallClock(ms, tz) {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat("en-US", {
+    timeZone: tz, hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", weekday: "short",
+  }).formatToParts(new Date(ms)).map(p => [p.type, p.value]));
+  return { y: +parts.year, mo: +parts.month, d: +parts.day, h: +parts.hour, mi: +parts.minute, wd: WEEKDAYS.indexOf(parts.weekday.toLowerCase().slice(0, 3)) };
+}
+
+/** The UTC instant at which the clock in `tz` reads y-mo-d h:mi. Two passes,
+ *  so a date on the far side of a DST change still lands on the right hour. */
+export function zonedToUtc(y, mo, d, h, mi, tz) {
+  const want = Date.UTC(y, mo - 1, d, h, mi);
+  let t = want;
+  for (let i = 0; i < 2; i++) {
+    const w = wallClock(t, tz);
+    t += want - Date.UTC(w.y, w.mo - 1, w.d, w.h, w.mi);
+  }
+  return t;
+}
+
+/**
+ * When a send decided at `now` should be delivered: an ISO string for Resend's
+ * scheduled_at, or null for "now". Null when there is no window, and when the
+ * window's day is today in its own zone and the time has passed (a late
+ * approval on Sunday goes at once). Otherwise the next window.
+ */
+export function sendAtFor(now, spec) {
+  const w = typeof spec === "string" ? parseSendAt(spec) : spec;
+  if (!w) return null;
+  const ms = typeof now === "number" ? now : Date.parse(now);
+  const c = wallClock(ms, w.tz);
+  const today = zonedToUtc(c.y, c.mo, c.d, w.hour, w.minute, w.tz);
+  if (c.wd === w.weekday) return ms >= today ? null : new Date(today).toISOString();
+  const ahead = (w.weekday - c.wd + 7) % 7;
+  // Step whole days on the calendar, not 24h blocks, so a DST night in between
+  // cannot shift the hour.
+  const base = new Date(Date.UTC(c.y, c.mo - 1, c.d + ahead));
+  return new Date(zonedToUtc(base.getUTCFullYear(), base.getUTCMonth() + 1, base.getUTCDate(), w.hour, w.minute, w.tz)).toISOString();
+}
+
+/** "Sunday 09:00 America/New_York" — the window itself, for task text. */
+export function describeWindow(w) {
+  const day = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"][w.weekday];
+  return `${day} ${String(w.hour).padStart(2, "0")}:${String(w.minute).padStart(2, "0")} ${w.tz}`;
+}
+
+/** "Sun, Oct 4, 09:00 America/New_York" — how a scheduled time reads in a report. */
+export function describeSendAt(iso, tz) {
+  if (!iso) return "now";
+  const t = new Intl.DateTimeFormat("en-US", { timeZone: tz, weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date(iso));
+  return `${t} ${tz}`;
 }
 
 /** Poll trigger: what an asset's control tags ask for, minus what the ledger says already ran on this version. */
@@ -578,7 +666,7 @@ export function renderSummary({ mode, issue, tag, audience, reportedTotal, swept
 
 function readConfig() {
   const mode = process.env.NEWSLETTER_MODE || "dry-run";
-  if (!MODES.has(mode)) throw new Error(`NEWSLETTER_MODE must be dry-run | test | live | poll, got "${mode}"`);
+  if (!MODES.has(mode)) throw new Error(`NEWSLETTER_MODE must be dry-run | test | live | poll | cancel, got "${mode}"`);
   const excludeTags = (process.env.NEWSLETTER_EXCLUDE_TAGS || UNSUBSCRIBED_TAG).split(",").map(s => s.trim()).filter(Boolean);
   if (!excludeTags.map(lower).includes(lower(UNSUBSCRIBED_TAG))) excludeTags.push(UNSUBSCRIBED_TAG);
   return {
@@ -594,6 +682,7 @@ function readConfig() {
     testRecipients: parseRecipients(process.env.NEWSLETTER_TEST_RECIPIENT),
     reportTo: process.env.NEWSLETTER_REPORT_TO || "",
     dryRun: process.env.DRY_RUN === "1",
+    sendAt: parseSendAt(process.env.NEWSLETTER_SEND_AT || ""),
   };
 }
 
@@ -743,13 +832,16 @@ async function fileRefusalTask(cfg, { assetId, title, reason, fix }) {
  * Never throws: an issue that was proofed but whose card failed to file is
  * still armable with the Send tag, and the summary says so.
  */
-async function fileReadyTask(cfg, { assetId, title, tag, count, version }) {
+async function fileReadyTask(cfg, { assetId, title, tag, count, version, weekly = false }) {
   const ext = refusalTaskExternalId(assetId);
   const taskTitle = `[Newsletter] ready to send: ${title}`.slice(0, 200);
   const line = runLine("proofed", runUrl());
   const what = `"${title}" was test-sent to ${cfg.testRecipients.join(", ")} and is ready to go live to "${tag}" (${count} recipients, version ${String(version).slice(0, 8)}).`;
-  const fix = `Read the proof in your inbox. To send it, comment \`approve\` on this task (or \`send it\` / \`go ahead\`) - commanders only, and the word must START the comment. To stop it, comment \`no\` or \`hold\`. Applying the \`${CONTROL_TAGS.send}\` tag in NOAN still works too. An edit to the issue voids this: it needs a fresh test.`;
-  const assignees = String(process.env.NEWSLETTER_ASSIGNEES || "").split(",").map(x => x.trim()).filter(Boolean);
+  const fix = `Read the proof in your inbox. To send it, comment \`approve\` on this task (${weekly && cfg.sendAt ? `this is the weekly issue, so it goes out at the next send window, ${describeWindow(cfg.sendAt)}` : "it goes out on the next poll"}) (or \`send it\` / \`go ahead\`) - commanders only, and the word must START the comment. To stop it, comment \`no\` or \`hold\`. Applying the \`${CONTROL_TAGS.send}\` tag in NOAN still works too. An edit to the issue voids this: it needs a fresh test.`;
+  // The weekly issue is reviewed by whoever the weekly drafter answers to;
+  // a one-off stays with the newsletter's usual owners.
+  const pick = weekly && process.env.NEWSLETTER_WEEKLY_ASSIGNEES ? process.env.NEWSLETTER_WEEKLY_ASSIGNEES : process.env.NEWSLETTER_ASSIGNEES;
+  const assignees = String(pick || "").split(",").map(x => x.trim()).filter(Boolean);
   try {
     const open = (await allTasksOnce()).find(t => t.externalId === ext && !t.completed && t.status !== "done");
     if (open) {
@@ -870,7 +962,7 @@ async function runTest(cfg, state, issue, tag, sweep, { via }) {
   };
   saveLocalState(STATE_NAME, state);
 
-  const taskId = await fileReadyTask(cfg, { assetId: issue.id, title: issue.title, tag, count: audience.recipients.length, version: issue.version });
+  const taskId = await fileReadyTask(cfg, { assetId: issue.id, title: issue.title, tag, count: audience.recipients.length, version: issue.version, weekly: issue.weekly });
   const lines = sent.map(x => `${x.email} (Resend ${x.resendId || "?"}${x.live ? "" : ", unsubscribe link has no token: not a NOAN contact"})`);
   const summary = renderSummary(out)
     + `\n\nTest send delivered to ${sent.length} inbox(es): ${lines.join("; ")}.`
@@ -892,7 +984,7 @@ async function runTest(cfg, state, issue, tag, sweep, { via }) {
  * `send` and `wait` are injectable so its test can play
  * Resend, including a crash between Resend accepting and the ledger landing.
  */
-export async function sendLiveChunks({ issue, slot, recipients, sentForSlot, cfg, save, send = sendBatchWithRetry, wait = sleep }) {
+export async function sendLiveChunks({ issue, slot, recipients, sentForSlot, cfg, save, scheduledAt = null, send = sendBatchWithRetry, wait = sleep }) {
   const { chunks, skipped } = planChunks(recipients, sentForSlot, cfg.batchSize);
   const results = { sent: 0, skipped, failed: 0, failures: [], batches: 0 };
   let consecutiveFailures = 0;
@@ -900,7 +992,7 @@ export async function sendLiveChunks({ issue, slot, recipients, sentForSlot, cfg
     const key = chunkKey(slot, chunk.map(r => r.id));
     const emails = chunk.map(r => {
       const mail = buildMail({ issue, contactId: r.id, secret: cfg.secret, base: cfg.base });
-      return { to: r.email, subject: mail.subject, html: mail.html, text: mail.text, headers: mail.headers, tags: mailTags(issue.id, r.id) };
+      return { to: r.email, subject: mail.subject, html: mail.html, text: mail.text, headers: mail.headers, tags: mailTags(issue.id, r.id), ...(scheduledAt ? { scheduledAt } : {}) };
     });
     const at = new Date().toISOString();
     let res;
@@ -937,7 +1029,7 @@ export async function sendLiveChunks({ issue, slot, recipients, sentForSlot, cfg
     res.forEach((r, i) => {
       const c = chunk[i];
       if (r.ok) {
-        sentForSlot[c.id] = { at, email: c.email, resendId: r.id || null };
+        sentForSlot[c.id] = { at, email: c.email, resendId: r.id || null, ...(scheduledAt ? { scheduledFor: scheduledAt } : {}) };
         results.sent += 1;
       } else {
         // One address Resend would not take. The rest of the chunk went.
@@ -986,27 +1078,34 @@ async function runLive(cfg, state, issue, tag, sweep, { nonce = "", via, strict 
     if (strict) throw new Error(`live send refused: ${gate.reason}`);
     return { refused: gate.reason, summary, html: preview.html };
   }
-  if (cfg.dryRun) { log(`  DRY_RUN: would send "${issue.title}" live to ${audience.recipients.length} contacts tagged ${tag}`); return { summary: renderSummary(out), html: preview.html }; }
+  // Only the WEEKLY issue waits for the send window, and only when a tag or an
+  // approval armed it. A one-off issue, and the button, send now.
+  const scheduledAt = via === "dispatch" || !issue.weekly ? null : sendAtFor(Date.now(), cfg.sendAt);
+  const when = scheduledAt ? `scheduled for ${describeSendAt(scheduledAt, cfg.sendAt.tz)}` : "sent now";
+  if (cfg.dryRun) { log(`  DRY_RUN: would hand "${issue.title}" to Resend for ${audience.recipients.length} contacts tagged ${tag}, ${when}`); return { summary: renderSummary(out), html: preview.html }; }
 
   const slot = ledgerSlot(issue.id, nonce);
   state.sent = state.sent || {};
   state.sent[slot] = state.sent[slot] || {};
   const results = await sendLiveChunks({
     issue, slot, recipients: audience.recipients, sentForSlot: state.sent[slot], cfg,
-    save: () => saveLocalState(STATE_NAME, state),
+    save: () => saveLocalState(STATE_NAME, state), scheduledAt,
   });
 
+  const sched = scheduledAt ? { scheduledFor: scheduledAt } : {};
   state.live = state.live || {};
-  state.live[issue.id] = { at: new Date().toISOString(), version: issue.version, tag, slot, via, ...results, failures: undefined };
+  state.live[issue.id] = { at: new Date().toISOString(), version: issue.version, tag, slot, via, ...sched, ...results, failures: undefined };
   state.issues = state.issues || [];
-  state.issues.push({ assetId: issue.id, version: issue.version, slot, title: issue.title, tag, at: new Date().toISOString(), via, ...results, failures: undefined });
+  state.issues.push({ assetId: issue.id, version: issue.version, slot, title: issue.title, tag, at: new Date().toISOString(), via, ...sched, ...results, failures: undefined });
   saveLocalState(STATE_NAME, state);
 
-  const summary = renderSummary({ ...out, results });
+  const summary = renderSummary({ ...out, results }) + (scheduledAt
+    ? `\n\nScheduled: Resend delivers it ${describeSendAt(scheduledAt, cfg.sendAt.tz)}. To stop it before then, run the newsletter workflow with mode=cancel and this issue.`
+    : "");
   log("\n" + summary);
 
   await postNote({
-    title: `Newsletter sent: ${issue.title}`,
+    title: `${scheduledAt ? "Newsletter scheduled" : "Newsletter sent"}: ${issue.title}`,
     content: summary,
     externalId: `newsletter:${slot}:${lower(tag)}`,
   }).catch(e => log(`  warn: NOAN note failed: ${e.message}`));
@@ -1018,7 +1117,9 @@ async function runLive(cfg, state, issue, tag, sweep, { nonce = "", via, strict 
 
   await sendWithRetry({
     to: cfg.reportTo,
-    subject: `[newsletter] "${issue.title}" to ${tag}: ${results.sent} sent, ${results.failed} failed`,
+    subject: scheduledAt
+      ? `[newsletter] "${issue.title}" to ${tag}: ${results.sent} scheduled for ${describeSendAt(scheduledAt, cfg.sendAt.tz)}, ${results.failed} failed`
+      : `[newsletter] "${issue.title}" to ${tag}: ${results.sent} sent, ${results.failed} failed`,
     html: renderNewsletterHtml({ title: "Newsletter send report", markdown: summary, unsubscribeUrl: null }),
     text: summary,
     cc: false,
@@ -1029,9 +1130,59 @@ async function runLive(cfg, state, issue, tag, sweep, { nonce = "", via, strict 
   return { summary, html: preview.html, results };
 }
 
+/* ---------------- cancel (before the send window) ---------------- */
+
+/**
+ * Pull back a scheduled issue. Every recipient whose ledger row carries a
+ * Resend id and a scheduledFor still in the future is cancelled at Resend, and
+ * that row leaves the ledger so a later send reaches them. Rows Resend will not
+ * cancel (already delivered, or never scheduled) stay, because the person did
+ * get the email.
+ *
+ * The cancel STICKS to this version. The live record stays (marked cancelled),
+ * so neither a Send tag still on the asset nor the original "approve" comment
+ * can re-arm it on the next poll; deleting the record would have re-sent it
+ * within two hours. To send it after all: edit the issue (a new version needs a
+ * fresh test and approval, as every edit does) or press the button in live mode.
+ */
+export async function cancelScheduled(state, assetId, { now = Date.now(), cancel = cancelEmail } = {}) {
+  const out = { cancelled: 0, kept: 0, failures: [] };
+  for (const [slot, rows] of Object.entries(state.sent || {})) {
+    if (!(slot === assetId || slot.startsWith(`${assetId}:`))) continue;
+    for (const [contactId, row] of Object.entries(rows)) {
+      if (!row?.scheduledFor || Date.parse(row.scheduledFor) <= now) { out.kept += 1; continue; }
+      const r = await cancel(row.resendId);
+      if (r.ok) { delete rows[contactId]; out.cancelled += 1; }
+      else { out.kept += 1; out.failures.push({ email: row.email, error: r.error }); }
+    }
+  }
+  if (state.live?.[assetId]) state.live[assetId].cancelled = { at: new Date(now).toISOString(), cancelled: out.cancelled, kept: out.kept };
+  return out;
+}
+
+async function runCancel(cfg) {
+  const needle = process.env.NEWSLETTER_ASSET || "";
+  if (!needle) throw new Error("NEWSLETTER_ASSET is required for mode=cancel");
+  const issue = resolveIssue(await fetchNewsletterAssets(), needle);
+  if (issue.error) throw new Error(issue.error);
+  const state = loadLocalState(STATE_NAME, "sent");
+  const live = state.live?.[issue.id];
+  if (!live?.scheduledFor) { log(`  "${issue.title}" has no scheduled send on record — nothing to cancel`); return; }
+  if (live.cancelled) { log(`  "${issue.title}" was already cancelled at ${live.cancelled.at}`); return; }
+  if (Date.parse(live.scheduledFor) <= Date.now()) { log(`  "${issue.title}" was scheduled for ${live.scheduledFor}, which has passed — it has gone out`); return; }
+  if (cfg.dryRun) { log(`  DRY_RUN: would cancel the scheduled send of "${issue.title}" (${describeSendAt(live.scheduledFor, cfg.sendAt?.tz || "UTC")})`); return; }
+  const r = await cancelScheduled(state, issue.id);
+  saveLocalState(STATE_NAME, state);
+  const line = `Cancelled "${issue.title}": ${r.cancelled} scheduled email(s) withdrawn, ${r.kept} could not be (${r.failures.slice(0, 5).map(f => `${f.email}: ${f.error}`).join("; ") || "none failed"}).`;
+  log(`  ${line}`);
+  await report(cfg, `[newsletter] cancelled: ${issue.title}`, `${line}\n\n${r.kept ? "Some could not be withdrawn, so the issue stays recorded as sent to them. " : ""}This version will not go out again from a tag or the earlier approval. To send it after all, edit the issue (then test and approve it again), or run the workflow with mode=live.`);
+  if (r.failures.length && !r.cancelled) throw new Error("no scheduled email could be cancelled; see above");
+}
+
 /* ---------------- dispatch (the button) ---------------- */
 
 async function dispatch(cfg) {
+  if (cfg.mode === "cancel") return runCancel(cfg);
   const needle = process.env.NEWSLETTER_ASSET || "";
   const tag = (process.env.NEWSLETTER_AUDIENCE_TAG || "").trim();
   if (!needle || !tag) throw new Error("NEWSLETTER_ASSET and NEWSLETTER_AUDIENCE_TAG are required");

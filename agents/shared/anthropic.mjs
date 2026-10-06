@@ -101,6 +101,27 @@ export const ANALYSIS_MODEL = process.env.AUDIT_ANALYSIS_MODEL || "claude-opus-5
  * headers arrive immediately and pings keep the body alive; we reconstruct the
  * final message from the SSE events and callers never know the difference.
  */
+/** Fold a stream event's usage into what the stream has reported so far. message_start
+ *  carries the input side (input + cache tokens) and message_delta the cumulative output;
+ *  a null field never overwrites a number already seen. */
+function mergeUsage(prev, next) {
+  if (!next) return prev;
+  const out = { ...(prev || {}) };
+  for (const [k, v] of Object.entries(next)) if (v != null) out[k] = v;
+  return out;
+}
+
+/** Ledger row for a stream that ended in an error AFTER the API had started billing it.
+ *  Until 2026-10 these wrote nothing: the request was billed (input on message_start,
+ *  output for every token generated before the fault) but only a completed call reached
+ *  recordUsage, and the retry then paid again. September's ledger saw ~1.6M fewer output
+ *  tokens than the Admin API billed on the fleet key. The action is suffixed so the
+ *  report shows failed spend as its own line instead of folding it into the agent's. */
+async function recordFailedUsage(model, usage, action) {
+  if (!usage) return;
+  await recordUsage({ provider: "anthropic", model, usage, action: action ? `${action}-failed` : "stream-failed" });
+}
+
 function reconstruct(sseText) {
   const blocks = [];
   let stop_reason = null, stop_details = null, usage = null;
@@ -111,6 +132,9 @@ function reconstruct(sseText) {
     try { ev = JSON.parse(line.slice(6)); } catch { continue; }
 
     switch (ev.type) {
+      case "message_start":
+        usage = mergeUsage(usage, ev.message?.usage);
+        break;
       case "content_block_start": {
         const b = structuredClone(ev.content_block);
         // tool_use inputs stream as partial JSON; accumulate then parse at stop.
@@ -144,7 +168,7 @@ function reconstruct(sseText) {
       case "message_delta":
         stop_reason = ev.delta?.stop_reason ?? stop_reason;
         stop_details = ev.delta?.stop_details ?? stop_details;
-        usage = ev.usage ?? usage;
+        usage = mergeUsage(usage, ev.usage);
         break;
       case "error":
         // Capacity and transient server faults can arrive *here* rather than as an HTTP
@@ -153,7 +177,7 @@ function reconstruct(sseText) {
         // already retries an HTTP 429/5xx — see RETRYABLE_STREAM_ERRORS.
         throw Object.assign(
           new Error(`stream error: ${JSON.stringify(ev.error).slice(0, 300)}`),
-          { streamErrorType: ev.error?.type || null },
+          { streamErrorType: ev.error?.type || null, partialUsage: usage },
         );
     }
   }
@@ -320,7 +344,9 @@ async function post(body, { retries = 4, timeoutMs = 15 * 60 * 1000, betas, usag
     } catch (e) {
       // Same transient condition as the 429/5xx branch above, delivered by a different
       // route, so it gets the same budget and the same backoff. A stream that errored
-      // produced no completion, so there is nothing to record in the spend ledger.
+      // produced no completion, but it was billed for whatever it reported before the
+      // fault, so that goes in the ledger before the retry pays again.
+      await recordFailedUsage(body.model, e.partialUsage, usageOpts?.action);
       if (RETRYABLE_STREAM_ERRORS.has(e.streamErrorType)) {
         if (attempt < retries) {
           await new Promise(r => setTimeout(r, Math.min(2000 * 2 ** attempt, 20000)));
@@ -363,6 +389,8 @@ export async function callClaudeStream(body, { onText = () => {}, onThinking = (
     // set once each, returned on the result — never affects the stream.
     const t0 = Date.now();
     let tFirstByte = null, tFirstThink = null, tFirstOut = null;
+    // Outside the try so the catch can ledger a stream that failed after billing began.
+    let usage = null;
     try {
       const headers = {
         "Content-Type": "application/json",
@@ -385,7 +413,7 @@ export async function callClaudeStream(body, { onText = () => {}, onThinking = (
 
       const blocks = [];
       let stop_reason = null, stop_details = null;
-      let usage = null, sse = "";
+      let sse = "";
       const dec = new TextDecoder();
       for await (const chunk of res.body) {
         if (tFirstByte === null) tFirstByte = Date.now();
@@ -397,6 +425,9 @@ export async function callClaudeStream(body, { onText = () => {}, onThinking = (
           let ev;
           try { ev = JSON.parse(line.slice(6)); } catch { continue; }
           switch (ev.type) {
+            case "message_start":
+              usage = mergeUsage(usage, ev.message?.usage);
+              break;
             case "content_block_start": {
               const b = structuredClone(ev.content_block);
               if (b.type === "tool_use" || b.type === "server_tool_use") b._json = "";
@@ -429,7 +460,7 @@ export async function callClaudeStream(body, { onText = () => {}, onThinking = (
             case "message_delta":
               stop_reason = ev.delta?.stop_reason ?? stop_reason;
               stop_details = ev.delta?.stop_details ?? stop_details;
-              usage = ev.usage ?? usage;
+              usage = mergeUsage(usage, ev.usage);
               break;
             case "error":
               // Tagged for the same reason as in reconstruct(): the retry decision below
@@ -441,11 +472,12 @@ export async function callClaudeStream(body, { onText = () => {}, onThinking = (
           }
         }
       }
+      // spend ledger (usage-log.mjs) — never throws. BEFORE the refusal check: a refused
+      // call is a completed, billed request, and throwing first left it out of the ledger.
+      await recordUsage({ provider: "anthropic", model: body.model, usage });
       if (stop_reason === "refusal") {
         throw new Error(`model refused: ${stop_details?.explanation || "no explanation"}`);
       }
-      // spend ledger (usage-log.mjs) — never throws
-      await recordUsage({ provider: "anthropic", model: body.model, usage });
       return {
         content: blocks.filter(Boolean), stop_reason, stop_details, usage,
         timing: {
@@ -456,6 +488,9 @@ export async function callClaudeStream(body, { onText = () => {}, onThinking = (
         },
       };
     } catch (e) {
+      // A refusal was ledgered above as a completed call; anything else that failed after
+      // the stream reported usage was billed but never reached recordUsage.
+      if (!/^model refused/.test(String(e?.message))) await recordFailedUsage(body.model, usage);
       const retryable = e.retryable
         || RETRYABLE_STREAM_ERRORS.has(e.streamErrorType)
         || /fetch failed|network|ECONNRESET|ETIMEDOUT|terminated|aborted/i.test(String(e.message));

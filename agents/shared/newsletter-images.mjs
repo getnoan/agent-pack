@@ -79,8 +79,16 @@ export function publicBase(supabaseUrl, bucket = BUCKET) {
  * Throws an Error whose message is written for the person who sent the
  * picture: what is wrong and what to do instead.
  */
-export function newsletterImageHost({ url, key, fetchImpl = fetch, bucket = BUCKET, staging = STAGING_BUCKET }) {
-  if (!url || !key) throw new Error("newsletterImageHost: SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required");
+export function newsletterImageHost(opts = {}) { return imageHost(opts); }
+
+/**
+ * The same pipeline with its numbers as options, so the fleet's media
+ * library hosts social pictures the same way: staged privately,
+ * resized, metadata gone, content-hashed. `prefix` is the folder inside the
+ * bucket; `what` names the destination in the messages a person reads.
+ */
+export function imageHost({ url, key, fetchImpl = fetch, bucket = BUCKET, staging = STAGING_BUCKET, prefix = "nl", targetWidth = TARGET_WIDTH, maxFinalBytes = MAX_FINAL_BYTES, what = "email pictures", maxLabel = "1 MB" } = {}) {
+  if (!url || !key) throw new Error("imageHost: SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required");
   const root = String(url).replace(/\/+$/, "");
   const auth = { Authorization: `Bearer ${key}`, apikey: key };
   const pub = publicBase(root, bucket);
@@ -90,11 +98,11 @@ export function newsletterImageHost({ url, key, fetchImpl = fetch, bucket = BUCK
     return res;
   }
   async function existing(hash) {
-    const res = await call(`/object/list/${bucket}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ prefix: "nl", search: hash, limit: 5 }) });
+    const res = await call(`/object/list/${bucket}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ prefix, search: hash, limit: 5 }) });
     if (!res.ok) return null;
     const rows = await res.json().catch(() => []);
     const hit = (Array.isArray(rows) ? rows : []).find(r => String(r?.name || "").startsWith(`${hash}-`));
-    return hit ? `nl/${hit.name}` : null;
+    return hit ? `${prefix}/${hit.name}` : null;
   }
   async function put(bkt, path, bytes, mime, extra = {}) {
     const res = await call(`/object/${bkt}/${path}`, { method: "POST", headers: { "Content-Type": mime, "x-upsert": "true", ...extra }, body: bytes });
@@ -123,28 +131,30 @@ export function newsletterImageHost({ url, key, fetchImpl = fetch, bucket = BUCK
 
     let out = src, final = info;
     if (info.kind === "gif") {
-      if (src.length > MAX_FINAL_BYTES) throw new Error(`the GIF is ${(src.length / 1048576).toFixed(1)} MB; an animated picture in an email must be under 1 MB. Make it shorter or smaller and send it again`);
+      if (src.length > maxFinalBytes) throw new Error(`the GIF is ${(src.length / 1048576).toFixed(1)} MB; an animated picture here must be under ${maxLabel}. Make it shorter or smaller and send it again`);
     } else {
       const stage = `${hash}.${info.ext}`;
       await put(staging, stage, src, info.mime);
       try {
         // The largest first; a PNG that stays heavy (a detailed screenshot)
         // steps down in width, a JPG steps down in quality.
+        // the ladder steps to five sixths and two thirds of the target (1200 → 1000 → 800)
+        const step = f => Math.round(targetWidth * f);
         const tries = info.kind === "jpeg"
-          ? [{ width: TARGET_WIDTH, quality: 80 }, { width: TARGET_WIDTH, quality: 65 }, { width: 1000, quality: 60 }]
-          : [{ width: TARGET_WIDTH }, { width: 1000 }, { width: 800 }];
+          ? [{ width: targetWidth, quality: 80 }, { width: targetWidth, quality: 65 }, { width: step(5 / 6), quality: 60 }]
+          : [{ width: targetWidth }, { width: step(5 / 6) }, { width: step(2 / 3) }];
         for (const t of tries) {
           out = await transformed(stage, t);
-          if (out.length <= MAX_FINAL_BYTES) break;
+          if (out.length <= maxFinalBytes) break;
         }
       } finally {
         await call(`/object/${staging}`, { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ prefixes: [stage] }) }).catch(() => {});
       }
       final = sniffImage(out);
       if (final.error) throw new Error("storage returned something that is not a picture");
-      if (out.length > MAX_FINAL_BYTES) throw new Error(`even at ${final.width}px wide it is ${(out.length / 1048576).toFixed(1)} MB; email pictures must be under 1 MB. Send it as a JPG instead of a PNG`);
+      if (out.length > maxFinalBytes) throw new Error(`even at ${final.width}px wide it is ${(out.length / 1048576).toFixed(1)} MB; ${what} must be under ${maxLabel}. Send it as a JPG instead of a PNG`);
     }
-    const path = `nl/${hash}-${final.width}x${final.height}.${final.ext}`;
+    const path = `${prefix}/${hash}-${final.width}x${final.height}.${final.ext}`;
     await put(bucket, path, out, final.mime, { "cache-control": CACHE });
     return { url: pub + path, width: final.width, height: final.height, bytes: out.length, mime: final.mime, reused: false };
   }

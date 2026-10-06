@@ -80,23 +80,46 @@ const SCHEMA = {
         required: ["blockASlug", "blockATitle", "blockBSlug", "blockBTitle", "whatsDuplicated", "targetBlockSlug", "oldExcerpt", "newExcerpt"],
       },
     },
+    // Every candidate is still adjudicated explicitly — each ref lands in exactly one of
+    // `candidates` or `rejectedCandidates` — but a rejection costs one short line, not a full
+    // entry of nulls. Until 2026-10 a rejection was a full candidates[] entry with
+    // isGenuineFact:false: 93 of them on 2026-09-21, the dominant output term on the run that
+    // died at max_tokens, all discarded unread. The reason given for them ("so the worker can
+    // still close out consumed capture-queue tasks") was stale — closure iterates the board.
     candidates: {
       type: "array",
-      description: "One entry per candidate PROCESSED this run, from either the capture-queue tasks or the notes scan — including ones you reject (isGenuineFact:false), so the worker can still close out consumed capture-queue tasks correctly. Only isGenuineFact:true entries are shown in the report; rejected ones are dropped from it entirely, not shown as a 'nothing here' placeholder.",
+      description: "GENUINE candidates only: one full entry per capture-queue or notes-scan item you judge to be a real, durable, ready-to-post business fact that isn't already reflected elsewhere in the fact base. Every other item goes in rejectedCandidates instead. An empty array is a valid, expected outcome in a healthy week.",
       items: {
         type: "object",
         additionalProperties: false,
         properties: {
+          ref: { type: "string", description: "The item's short ref from the input (T1, T2, ... for capture-queue tasks; N1, N2, ... for notes-scan items)." },
           source: { type: "string", enum: ["task", "notes-scan"] },
           sourceLabel: { type: "string", description: "Task title (for source=task) or the note's title + createdAt date (for source=notes-scan)." },
-          isGenuineFact: { type: "boolean", description: "true only for a real, durable, ready-to-post business-fact recommendation that isn't already reflected elsewhere in the fact base. false for operational escalations, contact-specific context, engineering/repo conventions, or anything thin/already-covered — this is the correct, expected outcome for most notes-scan items and most capture-queue tasks. Don't force a rejection into a 'no fact recommended' placeholder just to have an entry; set isGenuineFact:false and let the worker drop it." },
-          recommendedContent: { type: ["string", "null"], description: "Full ready-to-post fact content. Required (non-null) when isGenuineFact is true; null when isGenuineFact is false — never a 'no fact recommended' sentence here, that's what isGenuineFact:false already communicates." },
-          targetBlockSlug: { type: ["string", "null"], description: "An existing block slug this maps to, or null if it needs a new block. Only meaningful when isGenuineFact is true." },
-          newBlockTitle: { type: ["string", "null"], description: "Suggested new block title, only if targetBlockSlug is null and isGenuineFact is true." },
-          newBlockDescription: { type: ["string", "null"], description: "Suggested new block description, only if targetBlockSlug is null and isGenuineFact is true." },
-          newStackTitle: { type: ["string", "null"], description: "Which existing stack the new block belongs in (by title), or a suggested new custom stack title if genuinely warranted (rare). Only meaningful when isGenuineFact is true." },
+          recommendedContent: { type: "string", description: "Full ready-to-post fact content." },
+          targetBlockSlug: { type: ["string", "null"], description: "An existing block slug this maps to, or null if it needs a new block." },
+          newBlockTitle: { type: ["string", "null"], description: "Suggested new block title, only if targetBlockSlug is null." },
+          newBlockDescription: { type: ["string", "null"], description: "Suggested new block description, only if targetBlockSlug is null." },
+          newStackTitle: { type: ["string", "null"], description: "Which existing stack the new block belongs in (by title), or a suggested new custom stack title if genuinely warranted (rare). Only if targetBlockSlug is null." },
         },
-        required: ["source", "sourceLabel", "isGenuineFact", "recommendedContent", "targetBlockSlug", "newBlockTitle", "newBlockDescription", "newStackTitle"],
+        required: ["ref", "source", "sourceLabel", "recommendedContent", "targetBlockSlug", "newBlockTitle", "newBlockDescription", "newStackTitle"],
+      },
+    },
+    rejectedCandidates: {
+      type: "array",
+      description: "One SHORT entry per capture-queue or notes-scan item you judged NOT to be a genuine fact candidate — the expected outcome for most of them. Every input ref must appear in exactly one of candidates or rejectedCandidates; nothing is skipped. These are never shown in the report.",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          ref: { type: "string", description: "The item's short ref from the input (T1.../N1...)." },
+          reason: {
+            type: "string",
+            enum: ["operational", "contact-context", "engineering-convention", "already-covered", "too-thin", "other"],
+            description: "operational = an escalation, follow-up or one-off task; contact-context = about one person or company; engineering-convention = a repo/agent/process detail, not a business fact; already-covered = already reflected in the fact base; too-thin = plausible but not enough substance to post; other = none of these.",
+          },
+        },
+        required: ["ref", "reason"],
       },
     },
     summary: {
@@ -105,7 +128,7 @@ const SCHEMA = {
       items: { type: "string" },
     },
   },
-  required: ["gaps", "contradictions", "overlaps", "candidates", "summary"],
+  required: ["gaps", "contradictions", "overlaps", "candidates", "rejectedCandidates", "summary"],
 };
 
 function buildSystemPrompt(brain) {
@@ -123,7 +146,7 @@ function buildSystemPrompt(brain) {
     `- Gaps, contradictions, and overlaps are scoped to the in-scope blocks provided below only — every block you were handed is already in scope, don't second-guess that scoping.`,
     `- Do not fabricate or hallucinate block slugs, titles, or content — only reference blocks provided in the input below.`,
     `- Never fabricate content to fill a gap. Only draft a gap's recommendedContent when you can genuinely ground it in facts or context actually given to you in this prompt. If a gap concerns something you have no real information about — a legal policy's actual text, financial specifics, HR criteria, partnership terms, anything not shown to you here — set recommendedContent to null and explain the gap in whyItMatters instead. Confident-sounding invented content is worse than an honest null: a human has to first realize it's fake before they can fix it.`,
-    `- Most notes-scan items and most capture-queue tasks are NOT genuine fact candidates — operational escalations, one-off contact context, and engineering/repo conventions are all isGenuineFact:false. Set it plainly rather than stretching a thin note into a "no fact recommended" placeholder; an empty Candidate Facts section is a valid, expected, good outcome in a healthy week.`,
+    `- Most notes-scan items and most capture-queue tasks are NOT genuine fact candidates — operational escalations, one-off contact context, and engineering/repo conventions are all rejections. Judge every item and put its ref in exactly one place: a full entry in candidates for the genuine few, or a one-line {ref, reason} in rejectedCandidates for the rest. Never stretch a thin note into a placeholder draft; an empty Candidate Facts section is a valid, expected, good outcome in a healthy week.`,
     `- The summary is the only place you write freeform prose. Keep it to 2-5 short bullets, at most two sentences each — this is what a busy reader sees first, so lead with what's actually worth their attention, not an exhaustive restatement of every list below it.`,
   ].join("");
 }
@@ -136,9 +159,9 @@ function buildUserPrompt({ windowLabel, isFirstRun, inScopeBlocks, gapBlocks, ta
 
   const gapLines = gapBlocks.map(b => `- ${b.stackTitle} / ${b.title} (blockSlug: ${b.slug}) — no fact recorded`).join("\n") || "(none)";
 
-  const taskLines = taskCandidates.map(t => `- [task ${t.id}] "${t.title}"\n  ${(t.details || "").slice(0, 2000)}`).join("\n\n") || "(none)";
+  const taskLines = taskCandidates.map((t, i) => `- [T${i + 1} · task ${t.id}] "${t.title}"\n  ${(t.details || "").slice(0, 2000)}`).join("\n\n") || "(none)";
 
-  const noteLines = notesCandidates.map(n => `- [note ${n.id}, ${n.createdAt}] "${n.title || "(untitled)"}"\n  ${(n.content || "").slice(0, 2000)}`).join("\n\n") || "(none)";
+  const noteLines = notesCandidates.map((n, i) => `- [N${i + 1} · note ${n.id}, ${n.createdAt}] "${n.title || "(untitled)"}"\n  ${(n.content || "").slice(0, 2000)}`).join("\n\n") || "(none)";
 
   const anomalyLines = anomalies.map(a => `- blockSlug ${a.blockSlug} (${a.blockTitle || "unknown title"}) has a fact but is outside the in-scope stack set${a.note ? ` — ${a.note}` : ""}`).join("\n") || "(none)";
 
@@ -160,7 +183,7 @@ function buildUserPrompt({ windowLabel, isFirstRun, inScopeBlocks, gapBlocks, ta
     `## Worker-computed anomalies: facts sitting on out-of-scope blocks (${anomalies.length} total) — don't list these individually anywhere in your output, characterize them briefly (patterns, counts) in your summary instead`,
     anomalyLines,
     ``,
-    `Return gaps (one per gap block above — null recommendedContent where you lack real grounding, never invented content), contradictions and overlaps (both read from the in-scope filled blocks above, each as a verbatim oldExcerpt from the target block's current fact plus the newExcerpt it becomes — never a whole-document rewrite and never an edit instruction), candidates (one per capture-queue + notes-scan item above, isGenuineFact:false for the majority that aren't real fact recommendations), and summary (2-5 short bullets covering the headline counts, anything notable, and the anomalies pattern).`,
+    `Return gaps (one per gap block above — null recommendedContent where you lack real grounding, never invented content), contradictions and overlaps (both read from the in-scope filled blocks above, each as a verbatim oldExcerpt from the target block's current fact plus the newExcerpt it becomes — never a whole-document rewrite and never an edit instruction), candidates (a full entry for each genuine fact candidate only) and rejectedCandidates (a {ref, reason} line for every other capture-queue + notes-scan item — the majority; every T/N ref appears in exactly one of the two), and summary (2-5 short bullets covering the headline counts, anything notable, and the anomalies pattern).`,
   ].join("\n");
 }
 
@@ -216,9 +239,31 @@ export async function runFactAlignmentAgent({ windowLabel, isFirstRun, inScopeBl
 
 /** Candidates the model judged to be genuine, ready-to-post fact recommendations —
  *  used both for the report's Candidate Facts section and anywhere a candidate count is
- *  shown, so a raw "9 candidates" (mostly rejections) never appears anywhere. */
+ *  shown. Since 2026-10 `candidates` holds genuine ones only; the isGenuineFact filter
+ *  stays so a response in the old shape (rejections inline) still renders correctly. */
 export function genuineCandidates(result) {
-  return Array.isArray(result.candidates) ? result.candidates.filter(c => c.isGenuineFact) : [];
+  return Array.isArray(result.candidates) ? result.candidates.filter(c => c.isGenuineFact !== false) : [];
+}
+
+/** Did the model adjudicate every candidate it was given? The short refs make this
+ *  checkable, which the old all-inline shape never was: a run that skipped items just
+ *  reported fewer of them. `missing` = refs given but answered nowhere; `unknown` = refs
+ *  answered that were never given. Report-only — a gap here is a warning, not a failure,
+ *  because the closeout iterates the board and does not depend on the model's answer. */
+export function triageCoverage(result, { taskCount = 0, noteCount = 0 } = {}) {
+  const expected = new Set([
+    ...Array.from({ length: taskCount }, (_, i) => `T${i + 1}`),
+    ...Array.from({ length: noteCount }, (_, i) => `N${i + 1}`),
+  ]);
+  const answered = new Set([
+    ...genuineCandidates(result).map(c => c.ref),
+    ...(Array.isArray(result.rejectedCandidates) ? result.rejectedCandidates.map(r => r.ref) : []),
+  ].filter(Boolean));
+  return {
+    reviewed: [...answered].filter(r => expected.has(r)).length,
+    missing: [...expected].filter(r => !answered.has(r)),
+    unknown: [...answered].filter(r => !expected.has(r)),
+  };
 }
 
 /* ---------------- recommendation manifest ---------------- */

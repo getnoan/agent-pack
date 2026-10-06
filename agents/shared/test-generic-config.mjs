@@ -47,6 +47,7 @@ withEnv(CLEAR, () => {
   ok("no identity ids by default", agentIdentityIds().length === 0 && agentIdentityId() === null);
   ok("no links allowed by default, and the rule says so", allowedLinks().length === 0 && /Do not include any hyperlink/.test(linkRule()));
   ok("pronouns default to they/them", pronouns().subj === "they" && pronouns().obj === "them" && pronouns().poss === "their");
+  ok("a they/them agent takes the plural verb in respond-by prose", /they pick it up on their next poll/.test(RESPOND_BY.reassign) && /they act on the draft/.test(LANE_RESPONSE.approval) && /they review again/.test(LANE_RESPONSE["pr-review"]) && !/they (picks|acts|reviews)\b/.test(Object.values(RESPOND_BY).join(" ") + Object.values(LANE_RESPONSE).join(" ")));
   ok("the wake predicate uses the configured name", addressesAgent("@Agent look at this") && !addressesAgent("@Verity look at this") && addressesAgent("retry"));
   ok("respond-by prose names the configured agent", RESPOND_BY.email.includes("Agent picks it up") && !/Verity/.test(Object.values(RESPOND_BY).join(" ") + Object.values(LANE_RESPONSE).join(" ")));
 });
