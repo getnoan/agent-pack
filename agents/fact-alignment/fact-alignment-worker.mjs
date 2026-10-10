@@ -175,6 +175,12 @@ function capFact(content) {
 
 const FACT_CANDIDATE_RX = /^\[Fact Candidate\]/i;
 const MARK_STACK_RX = /^\[Fact Candidate\]\s*mark stack\s*"([^"]+)"\s*as relevant/i;
+// The inverse, for a single block: one that is empty ON PURPOSE (written by an app, or a policy
+// nobody intends to write) otherwise comes back as a gap every week, and the API has no way to
+// delete a block. Same shape as the relevance correction: the slug goes into state and the task
+// is closed out. Filling the block later needs no un-marking, because a block with a fact is
+// never a gap.
+const MARK_EMPTY_RX = /^\[Fact Candidate\]\s*mark block\s*"([^"]+)"\s*as deliberately empty/i;
 
 // The prefix above is anchored and bracketed, so "Fact candidate: ..." — or the same title
 // with a leading space — matches nothing and the capture is dropped with no error, no warning
@@ -192,18 +198,26 @@ export function isMalformedCapture(title) {
   return NEAR_MISS_RX.test(t) && !FACT_CANDIDATE_RX.test(t);
 }
 
+export function splitCaptureQueue(flagged) {
+  const markStackTasks = [];
+  const markEmptyTasks = [];
+  const genericCandidateTasks = [];
+  for (const t of flagged) {
+    const title = t.title || "";
+    const stack = title.match(MARK_STACK_RX);
+    const empty = title.match(MARK_EMPTY_RX);
+    if (stack) markStackTasks.push({ task: t, stackSlug: stack[1] });
+    else if (empty) markEmptyTasks.push({ task: t, blockSlug: empty[1] });
+    else genericCandidateTasks.push(t);
+  }
+  return { markStackTasks, markEmptyTasks, genericCandidateTasks };
+}
+
 async function loadCaptureQueue() {
   const backlog = await noanGetAll(`/tasks?status=backlog&per_page=100`);
   const flagged = backlog.filter(t => FACT_CANDIDATE_RX.test(t.title || ""));
-  const markStackTasks = [];
-  const genericCandidateTasks = [];
-  for (const t of flagged) {
-    const m = (t.title || "").match(MARK_STACK_RX);
-    if (m) markStackTasks.push({ task: t, stackSlug: m[1] });
-    else genericCandidateTasks.push(t);
-  }
   const malformedCaptures = backlog.filter(t => isMalformedCapture(t.title));
-  return { markStackTasks, genericCandidateTasks, malformedCaptures };
+  return { ...splitCaptureQueue(flagged), malformedCaptures };
 }
 
 /* ---------------- notes scan (early-stop pagination: newest-first, no date filter) ---------------- */
@@ -334,6 +348,14 @@ async function fetchGrowthTeamEmails() {
     .filter(Boolean);
 }
 
+// Gaps are in-scope blocks with no fact, minus the ones a person has marked deliberately empty.
+// The skipped ones are counted rather than dropped silently, so the report can say they exist.
+export function partitionGaps(inScopeBlocks, factsByBlock, deliberatelyEmptySlugs = []) {
+  const skip = new Set(deliberatelyEmptySlugs);
+  const empty = inScopeBlocks.filter(b => !factsByBlock.has(b.slug));
+  return { gapBlocks: empty.filter(b => !skip.has(b.slug)), skippedEmpty: empty.filter(b => skip.has(b.slug)) };
+}
+
 /* ---------------- main ---------------- */
 
 async function main() {
@@ -354,6 +376,7 @@ async function main() {
   // anti-duplicate-send ledger, so a missing row is a legitimate first run, not an abort).
   const prior = peekState(STATE_NAME) || {};
   const relevantStackSlugs = Array.isArray(prior.relevantStackSlugs) ? prior.relevantStackSlugs : [];
+  const deliberatelyEmptyBlockSlugs = Array.isArray(prior.deliberatelyEmptyBlockSlugs) ? prior.deliberatelyEmptyBlockSlugs : [];
   const isFirstRun = !prior.lastRun;
   const { windowStart, windowEnd } = calendarWeekWindow(DUE_WEEKDAY, now);
   const windowStartIso = windowStart.toISOString();
@@ -363,18 +386,19 @@ async function main() {
   const brain = await loadAgentBrain();
 
   // 2. Candidates
-  const { markStackTasks, genericCandidateTasks, malformedCaptures } = await loadCaptureQueue();
+  const { markStackTasks, markEmptyTasks, genericCandidateTasks, malformedCaptures } = await loadCaptureQueue();
   const allNotesInWindow = await fetchNotesInWindow(windowStartIso, windowEndIso);
   const notesCandidates = allNotesInWindow.filter(n => !skipNoteFromScan(n.title, n.content));
-  log(`  ${genericCandidateTasks.length} capture-queue candidate(s), ${markStackTasks.length} relevance correction(s), ${notesCandidates.length} notes-scan candidate(s)`);
+  log(`  ${genericCandidateTasks.length} capture-queue candidate(s), ${markStackTasks.length} relevance correction(s), ${markEmptyTasks.length} deliberately-empty mark(s), ${notesCandidates.length} notes-scan candidate(s)`);
   if (malformedCaptures.length) log(`  ${malformedCaptures.length} malformed capture(s) — reported, not consumed: ${malformedCaptures.map(t => JSON.stringify(t.title || "")).join(", ")}`);
 
   // 3. Relevance corrections applied before scoping
   const updatedRelevantStackSlugs = [...new Set([...relevantStackSlugs, ...markStackTasks.map(m => m.stackSlug)])];
+  const updatedDeliberatelyEmptyBlockSlugs = [...new Set([...deliberatelyEmptyBlockSlugs, ...markEmptyTasks.map(m => m.blockSlug)])];
 
   const { stackTitleBySlug, inScopeBlocks } = await loadScope(updatedRelevantStackSlugs);
   const factsByBlock = await loadAllFacts();
-  const gapBlocks = inScopeBlocks.filter(b => !factsByBlock.has(b.slug));
+  const { gapBlocks, skippedEmpty } = partitionGaps(inScopeBlocks, factsByBlock, updatedDeliberatelyEmptyBlockSlugs);
   // BlockListItem.stack only carries {id,slug} — resolve display titles via the stack map.
   const stackTitleOf = b => stackTitleBySlug.get(b.stack?.slug) || b.stack?.slug || "unknown stack";
   const filledInScopeBlocks = inScopeBlocks
@@ -383,7 +407,7 @@ async function main() {
   const gapBlocksWithTitles = gapBlocks.map(b => ({ slug: b.slug, title: b.title, stackTitle: stackTitleOf(b) }));
 
   const anomalies = await computeAnomalies(factsByBlock, inScopeBlocks);
-  log(`  ${inScopeBlocks.length} in-scope block(s), ${gapBlocks.length} gap(s), ${anomalies.length} anomal(y/ies)`);
+  log(`  ${inScopeBlocks.length} in-scope block(s), ${gapBlocks.length} gap(s) (${skippedEmpty.length} more marked deliberately empty), ${anomalies.length} anomal(y/ies)`);
 
   // 4. Model synthesis
   const result = await runFactAlignmentAgent({
@@ -423,7 +447,7 @@ async function main() {
   const applicableCount = manifest.entries.filter(e => e.applicable).length;
   log(`  manifest ${manifest.windowKey}: ${manifest.entries.length} recommendation(s), ${applicableCount} with a concrete block + drafted content`);
 
-  const reportOpts = { windowLabel, result, manifest, site, missingFactReviewTag, malformedCaptures, emptyRecipients: false };
+  const reportOpts = { windowLabel, result, manifest, site, missingFactReviewTag, malformedCaptures, deliberatelyEmptyCount: skippedEmpty.length, emptyRecipients: false };
   // The email carries the report in full. The note is the same report with its quoted bodies
   // clipped to whatever fits the note character cap — see renderReportForNote. Both are
   // rendered here so the dry-run shows exactly what each channel would receive.
@@ -443,7 +467,7 @@ async function main() {
     const emails = await fetchGrowthTeamEmails().catch(e => { log(`  warn: recipient lookup failed: ${e.message}`); return []; });
     log(`  dry-run: would email the report recipients (${emails.length} recipient(s)): ${emails.join(", ") || "(none found)"}`);
     log(`  dry-run: would create a review task, self-assigned, tagged "fact review" (found: ${!missingFactReviewTag})`);
-    log(`  dry-run: would close out ${genericCandidateTasks.length + markStackTasks.length} consumed [Fact Candidate] task(s)`);
+    log(`  dry-run: would close out ${genericCandidateTasks.length + markStackTasks.length + markEmptyTasks.length} consumed [Fact Candidate] task(s)`);
     return;
   }
 
@@ -472,16 +496,17 @@ async function main() {
     log("  warn: review task creation returned no id — could not self-assign or tag it");
   }
 
-  // Close out consumed [Fact Candidate] tasks (capture-queue candidates + relevance corrections).
-  for (const t of [...genericCandidateTasks, ...markStackTasks.map(m => m.task)]) {
+  // Close out consumed [Fact Candidate] tasks (capture-queue candidates, relevance corrections
+  // and deliberately-empty marks).
+  for (const t of [...genericCandidateTasks, ...markStackTasks.map(m => m.task), ...markEmptyTasks.map(m => m.task)]) {
     try {
       await noanPatch(`/tasks/${t.id}`, { completed: true, status: "done" });
     } catch (e) {
       log(`  warn: failed to close out task ${t.id}: ${e.message}`);
     }
   }
-  if (genericCandidateTasks.length + markStackTasks.length) {
-    log(`  closed out ${genericCandidateTasks.length + markStackTasks.length} consumed [Fact Candidate] task(s)`);
+  if (genericCandidateTasks.length + markStackTasks.length + markEmptyTasks.length) {
+    log(`  closed out ${genericCandidateTasks.length + markStackTasks.length + markEmptyTasks.length} consumed [Fact Candidate] task(s)`);
   }
 
   const emails = await fetchGrowthTeamEmails().catch(e => { log(`  warn: recipient lookup failed, skipping email: ${e.message}`); return []; });
@@ -508,6 +533,7 @@ async function main() {
     initialized: true,
     lastRun: nowIso,
     relevantStackSlugs: updatedRelevantStackSlugs,
+    deliberatelyEmptyBlockSlugs: updatedDeliberatelyEmptyBlockSlugs,
     manifests,
   });
   log(`  saved state (${Object.keys(manifests).length} manifest(s) retained)`);

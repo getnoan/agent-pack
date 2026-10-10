@@ -14,7 +14,7 @@
  *              inputs onto NEWSLETTER_ASSET / NEWSLETTER_AUDIENCE_TAG /
  *              NEWSLETTER_MODE = dry-run | test | live.
  *
- *   tags       NEWSLETTER_MODE=poll, run two-hourly from poller.yml (asked for
+ *   tags       NEWSLETTER_MODE=poll, run 3x/day from poller.yml (asked for
  *              2026-09-07: "could we just add a tag to the email?"). An asset
  *              tagged Newsletter + <audience tag> + `Test` gets test-sent to
  *              NEWSLETTER_TEST_RECIPIENT; tagged + `Send` goes live, gated
@@ -23,10 +23,15 @@
  *              carried by at least one contact. Remove the tag before the
  *              poll to abort.
  *
- *              There are no receipt tags: the public API has no route that
- *              writes tags onto an asset (PUT/PATCH/POST on /assets/{id}/tags
- *              and /assets/{id} all 404, probed 2026-09-07), so the LEDGER is
- *              the receipt. tested[] and live[] are keyed by the asset's
+ *              There are no receipt tags, by choice: this worker writes no
+ *              tags onto an asset, and the LEDGER is the receipt. (When this
+ *              was built, 2026-09-07, the API had no such route: PUT/PATCH/POST
+ *              on /assets/{id}/tags and /assets/{id} all 404'd. Since
+ *              2026-09-23 the live spec has PUT /assets/{assetId}/tags, body
+ *              {tagIds}, and POST /assets takes tagIds on create. The choice
+ *              stands: an issue's tags are the author's control surface, and a
+ *              receipt must carry the version it ran against, which a tag
+ *              cannot.) tested[] and live[] are keyed by the asset's
  *              STABLE id and carry the version they ran against: the same
  *              tags on the same version do nothing twice, and an EDIT makes a
  *              new version, which needs a new Test before Send will run.
@@ -468,8 +473,10 @@ export function pollPlan(asset, state) {
   if (tags.has(lower(CONTROL_TAGS.test)) && state?.tested?.[id]?.version !== version) actions.push("test");
   // Two ways in, one outcome: the Send TAG a person
   // applies in NOAN, or a commander's approval on the issue's task. The tag
-  // stays because it works; the approval exists because no agent can ever
-  // write that tag (POST /assets takes tagIds on CREATE only).
+  // stays because it works; the approval exists because, when it was built,
+  // no agent could write that tag (POST /assets took tagIds on CREATE only;
+  // PUT /assets/{assetId}/tags has existed since 2026-09-23, and this worker
+  // still never writes Send itself, so arming stays a human act).
   // A DECLINE is recorded on the same key and carries the same version, so
   // "there is an approval record for this version" is not the test - it would
   // arm a send the moment a commander said no. The record must be an approval.
@@ -534,8 +541,8 @@ export function liveGate(state, assetId, { version = null, testWindowDays = 7, m
  * The point of putting a refusal on the board is that the card names the next
  * action; "live send refused" on its own is the state the author was already
  * in. Every branch here says which TAG to move, because tags are the only
- * control surface an author has (the API cannot write tags onto an asset, so
- * the worker can never do it for them).
+ * control surface an author has (this worker writes no tags onto an asset,
+ * by design, so it never moves one for them).
  */
 export function fixFor(reason) {
   const r = String(reason || "");
