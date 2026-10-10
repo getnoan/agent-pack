@@ -844,7 +844,7 @@ async function fileReadyTask(cfg, { assetId, title, tag, count, version, weekly 
   const taskTitle = `[Newsletter] ready to send: ${title}`.slice(0, 200);
   const line = runLine("proofed", runUrl());
   const what = `"${title}" was test-sent to ${cfg.testRecipients.join(", ")} and is ready to go live to "${tag}" (${count} recipients, version ${String(version).slice(0, 8)}).`;
-  const fix = `Read the proof in your inbox. To send it, comment \`approve\` on this task (${weekly && cfg.sendAt ? `this is the weekly issue, so it goes out at the next send window, ${describeWindow(cfg.sendAt)}` : "it goes out on the next poll"}) (or \`send it\` / \`go ahead\`) - commanders only, and the word must START the comment. To stop it, comment \`no\` or \`hold\`. Applying the \`${CONTROL_TAGS.send}\` tag in NOAN still works too. An edit to the issue voids this: it needs a fresh test.`;
+  const fix = `Read the proof in your inbox. To send it, comment \`approve\` on this task (${weekly && cfg.sendAt ? `this is the weekly issue, so it goes out at the next send window, ${describeWindow(cfg.sendAt)}` : "it goes out on the next poll"}) (or \`send it\` / \`go ahead\`) - commanders only, and the word must START the comment. To stop it, comment \`no\` or \`hold\`. Only comments posted after this proof was sent count, and the first yes or no wins. To ask for a change instead, say what to change without opening on no / hold / stop / wait ("drop the demo offer", or "don't mention pricing"). Applying the \`${CONTROL_TAGS.send}\` tag in NOAN still works too. An edit to the issue voids this: it needs a fresh test.`;
   // The weekly issue is reviewed by whoever the weekly drafter answers to;
   // a one-off stays with the newsletter's usual owners.
   const pick = weekly && process.env.NEWSLETTER_WEEKLY_ASSIGNEES ? process.env.NEWSLETTER_WEEKLY_ASSIGNEES : process.env.NEWSLETTER_ASSIGNEES;
@@ -1238,8 +1238,13 @@ async function dispatch(cfg) {
  * means a full GET /tasks sweep, and this file's standing question is what a
  * step costs when it finds NOTHING. An asset only qualifies when it has been
  * proofed on its CURRENT version, has not gone live on it, is not already
- * approved, and does not carry the Send tag (which needs no approval). Most
+ * answered, and does not carry the Send tag (which needs no approval). Most
  * polls that is nobody and the board is never touched.
+ *
+ * "Answered" means for THIS proof. A decline recorded before the latest test
+ * of the same version (a manual re-test) answered the earlier proof, so the
+ * board is read again: NEWSLETTER.md has always said a fresh test clears a
+ * decline, and until 2026-10-10 nothing re-read it.
  */
 export function awaitingApproval(assets, state) {
   return assets.filter(a => {
@@ -1249,9 +1254,17 @@ export function awaitingApproval(assets, state) {
     if (tags.has(lower(CONTROL_TAGS.send))) return false;
     if (state?.tested?.[id]?.version !== version) return false;
     if (state?.live?.[id]?.version === version) return false;
-    if (state?.approved?.[id]?.version === version) return false;
+    const answer = state?.approved?.[id];
+    if (answer?.version === version && !(answer.declined && answeredBeforeProof(answer, state?.tested?.[id]))) return false;
     return true;
   });
+}
+
+/** Was this recorded verdict given before the proof now on record was sent? */
+function answeredBeforeProof(answer, tested) {
+  const said = Date.parse(answer?.commentAt || answer?.at);
+  const proofed = Date.parse(tested?.at);
+  return Number.isFinite(said) && Number.isFinite(proofed) && said < proofed;
 }
 
 /**
@@ -1281,9 +1294,18 @@ async function collectApprovals(cfg, assets, state) {
     if (!task) continue;
     // normalizeComments resolves the creator and marks the agent's own, so its
     // summaries on its own task can never read as a human saying yes.
-    const verdict = verdictFromComments(normalizeComments(task, { commanders }), commanders);
-    if (!verdict) continue;
+    const comments = normalizeComments(task, { commanders });
     const tested = state.tested?.[id] || {};
+    // Only comments made after THIS proof was sent count: the task outlives
+    // versions, and a verdict on an earlier one is not a verdict on this one.
+    // No recorded test time means no verdict, never "every comment counts".
+    if (!tested.at) { log(`  approvals: no test time recorded for ${id}, so no comment can be matched to its proof`); continue; }
+    const verdict = verdictFromComments(comments, commanders, { since: tested.at });
+    const earlier = verdictFromComments(comments, commanders);
+    if (earlier && earlier.commentId !== verdict?.commentId && Date.parse(earlier.at) < Date.parse(tested.at)) {
+      log(`  approvals: ignored ${earlier.verdict} by ${earlier.by} at ${earlier.at}: posted before this proof was sent (${tested.at})`);
+    }
+    if (!verdict) continue;
     state.approved = state.approved || {};
     state.approved[id] = {
       at: new Date().toISOString(),
@@ -1293,6 +1315,8 @@ async function collectApprovals(cfg, assets, state) {
       by: verdict.by,
       via: "comment",
       taskId: task.id,
+      commentId: verdict.commentId,
+      commentAt: verdict.at,
       ...(verdict.verdict === "decline" ? { declined: true } : {}),
     };
     found.push({ id, verdict: verdict.verdict, by: verdict.by, title: decodeEntities(a.activeVersion?.title || id) });

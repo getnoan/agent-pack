@@ -1258,7 +1258,7 @@ async function scanSupportTasks(getContacts, state) {
     }
     // "reply" opens a case and awaits them; "resolve" is a complete answer with
     // nothing to await (an FDA escalation whose gap a person has since closed,
-    // 2026-10-08: the agent answered Matt in one message, returned resolve, and
+    // 2026-10-08: the agent answered the customer in one message, returned resolve, and
     // this branch parked it with the answer's own summary as the "reason").
     // Either sends. Anything else is parked, and the park says WHICH verdict
     // it was: a human reading "fix the task details" for an escalate verdict
