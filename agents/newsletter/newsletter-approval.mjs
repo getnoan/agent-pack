@@ -27,9 +27,9 @@ const DECLINE_RX = () => new RegExp(LEAD() + "(no|hold|stop|wait|not\\s+yet|don[
 /**
  * "Don't <do something>" addressed to the drafter is steering, not a verdict.
  *
- * 2026-10-10: "@verity dont offer to book a demo at the end…" on the weekly
+ * 2026-10-10: "@<agent> dont offer to book a demo at the end…" on an
  * issue's review task was read as a DECLINE, and because the first verdict
- * wins it would have locked out the "send" Daniel gave the fixed version.
+ * wins it would have locked out the "send" a commander gave the fixed version.
  *
  * Deliberately the ONLY carve-out, and a narrow one. Every other opener
  * (no / hold / stop / wait / not yet) stays a decline however it continues,

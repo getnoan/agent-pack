@@ -116,8 +116,8 @@ export function latestSiteScan(siteState, priorRunIso) {
 /**
  * Who the review task goes to. PUT /tasks/{id}/assignees is a full replacement, so the running
  * identity has to be included explicitly or self-assignment is silently dropped. Deduped
- * because the extra list may well contain the running identity — running this with Daniel's
- * key while he is also configured as an extra reviewer must not name him twice.
+ * because the extra list may well contain the running identity — running this with a person's
+ * key while they are also configured as an extra reviewer must not name them twice.
  */
 export function reviewAssignees(identityId, extra = []) {
   return [...new Set([identityId, ...extra].filter(Boolean))];
