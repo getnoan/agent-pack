@@ -514,7 +514,7 @@ function renderExcerptPair(targetSlug, oldExcerpt, newExcerpt, bodyBudget = null
   ].join("\n");
 }
 
-export function renderReport({ windowLabel, result, manifest, site, missingFactReviewTag, malformedCaptures = [], emptyRecipients, bodyBudget = null }) {
+export function renderReport({ windowLabel, result, manifest, site, missingFactReviewTag, malformedCaptures = [], deliberatelyEmptyCount = 0, emptyRecipients, bodyBudget = null }) {
   const candidates = genuineCandidates(result);
 
   // Ids are assigned by position, so a manifest that doesn't line up with what's about to
@@ -539,6 +539,7 @@ export function renderReport({ windowLabel, result, manifest, site, missingFactR
   if (manifest) summaryLines.push(handlesSummary(manifest));
   if (missingFactReviewTag) summaryLines.push(`The "fact review" tag does not exist in NOAN — the review task was created untagged. Create the tag in the NOAN UI to fix this going forward.`);
   if (emptyRecipients) summaryLines.push(`No contacts carry the report recipient tag — this report was not emailed.`);
+  if (deliberatelyEmptyCount) summaryLines.push(`${deliberatelyEmptyCount} empty block(s) marked deliberately empty were left out of Gaps.`);
   if (malformedCaptures.length) summaryLines.push(`${malformedCaptures.length} backlog task(s) look like a fact capture but do not carry the \`[Fact Candidate]\` title prefix, so they were not picked up — see Malformed Captures.`);
 
   const parts = [`# Weekly Fact Alignment Report — ${windowLabel}`];

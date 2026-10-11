@@ -14,7 +14,7 @@
  *              inputs onto NEWSLETTER_ASSET / NEWSLETTER_AUDIENCE_TAG /
  *              NEWSLETTER_MODE = dry-run | test | live.
  *
- *   tags       NEWSLETTER_MODE=poll, run two-hourly from poller.yml (asked for
+ *   tags       NEWSLETTER_MODE=poll, run 3x/day from poller.yml (asked for
  *              2026-09-07: "could we just add a tag to the email?"). An asset
  *              tagged Newsletter + <audience tag> + `Test` gets test-sent to
  *              NEWSLETTER_TEST_RECIPIENT; tagged + `Send` goes live, gated
@@ -23,10 +23,15 @@
  *              carried by at least one contact. Remove the tag before the
  *              poll to abort.
  *
- *              There are no receipt tags: the public API has no route that
- *              writes tags onto an asset (PUT/PATCH/POST on /assets/{id}/tags
- *              and /assets/{id} all 404, probed 2026-09-07), so the LEDGER is
- *              the receipt. tested[] and live[] are keyed by the asset's
+ *              There are no receipt tags, by choice: this worker writes no
+ *              tags onto an asset, and the LEDGER is the receipt. (When this
+ *              was built, 2026-09-07, the API had no such route: PUT/PATCH/POST
+ *              on /assets/{id}/tags and /assets/{id} all 404'd. Since
+ *              2026-09-23 the live spec has PUT /assets/{assetId}/tags, body
+ *              {tagIds}, and POST /assets takes tagIds on create. The choice
+ *              stands: an issue's tags are the author's control surface, and a
+ *              receipt must carry the version it ran against, which a tag
+ *              cannot.) tested[] and live[] are keyed by the asset's
  *              STABLE id and carry the version they ran against: the same
  *              tags on the same version do nothing twice, and an EDIT makes a
  *              new version, which needs a new Test before Send will run.
@@ -468,8 +473,10 @@ export function pollPlan(asset, state) {
   if (tags.has(lower(CONTROL_TAGS.test)) && state?.tested?.[id]?.version !== version) actions.push("test");
   // Two ways in, one outcome: the Send TAG a person
   // applies in NOAN, or a commander's approval on the issue's task. The tag
-  // stays because it works; the approval exists because no agent can ever
-  // write that tag (POST /assets takes tagIds on CREATE only).
+  // stays because it works; the approval exists because, when it was built,
+  // no agent could write that tag (POST /assets took tagIds on CREATE only;
+  // PUT /assets/{assetId}/tags has existed since 2026-09-23, and this worker
+  // still never writes Send itself, so arming stays a human act).
   // A DECLINE is recorded on the same key and carries the same version, so
   // "there is an approval record for this version" is not the test - it would
   // arm a send the moment a commander said no. The record must be an approval.
@@ -534,8 +541,8 @@ export function liveGate(state, assetId, { version = null, testWindowDays = 7, m
  * The point of putting a refusal on the board is that the card names the next
  * action; "live send refused" on its own is the state the author was already
  * in. Every branch here says which TAG to move, because tags are the only
- * control surface an author has (the API cannot write tags onto an asset, so
- * the worker can never do it for them).
+ * control surface an author has (this worker writes no tags onto an asset,
+ * by design, so it never moves one for them).
  */
 export function fixFor(reason) {
   const r = String(reason || "");
@@ -837,7 +844,7 @@ async function fileReadyTask(cfg, { assetId, title, tag, count, version, weekly 
   const taskTitle = `[Newsletter] ready to send: ${title}`.slice(0, 200);
   const line = runLine("proofed", runUrl());
   const what = `"${title}" was test-sent to ${cfg.testRecipients.join(", ")} and is ready to go live to "${tag}" (${count} recipients, version ${String(version).slice(0, 8)}).`;
-  const fix = `Read the proof in your inbox. To send it, comment \`approve\` on this task (${weekly && cfg.sendAt ? `this is the weekly issue, so it goes out at the next send window, ${describeWindow(cfg.sendAt)}` : "it goes out on the next poll"}) (or \`send it\` / \`go ahead\`) - commanders only, and the word must START the comment. To stop it, comment \`no\` or \`hold\`. Applying the \`${CONTROL_TAGS.send}\` tag in NOAN still works too. An edit to the issue voids this: it needs a fresh test.`;
+  const fix = `Read the proof in your inbox. To send it, comment \`approve\` on this task (${weekly && cfg.sendAt ? `this is the weekly issue, so it goes out at the next send window, ${describeWindow(cfg.sendAt)}` : "it goes out on the next poll"}) (or \`send it\` / \`go ahead\`) - commanders only, and the word must START the comment. To stop it, comment \`no\` or \`hold\`. Only comments posted after this proof was sent count, and the first yes or no wins. To ask for a change instead, say what to change without opening on no / hold / stop / wait ("drop the demo offer", or "don't mention pricing"). Applying the \`${CONTROL_TAGS.send}\` tag in NOAN still works too. An edit to the issue voids this: it needs a fresh test.`;
   // The weekly issue is reviewed by whoever the weekly drafter answers to;
   // a one-off stays with the newsletter's usual owners.
   const pick = weekly && process.env.NEWSLETTER_WEEKLY_ASSIGNEES ? process.env.NEWSLETTER_WEEKLY_ASSIGNEES : process.env.NEWSLETTER_ASSIGNEES;
@@ -1231,8 +1238,13 @@ async function dispatch(cfg) {
  * means a full GET /tasks sweep, and this file's standing question is what a
  * step costs when it finds NOTHING. An asset only qualifies when it has been
  * proofed on its CURRENT version, has not gone live on it, is not already
- * approved, and does not carry the Send tag (which needs no approval). Most
+ * answered, and does not carry the Send tag (which needs no approval). Most
  * polls that is nobody and the board is never touched.
+ *
+ * "Answered" means for THIS proof. A decline recorded before the latest test
+ * of the same version (a manual re-test) answered the earlier proof, so the
+ * board is read again: NEWSLETTER.md has always said a fresh test clears a
+ * decline, and until 2026-10-10 nothing re-read it.
  */
 export function awaitingApproval(assets, state) {
   return assets.filter(a => {
@@ -1242,9 +1254,17 @@ export function awaitingApproval(assets, state) {
     if (tags.has(lower(CONTROL_TAGS.send))) return false;
     if (state?.tested?.[id]?.version !== version) return false;
     if (state?.live?.[id]?.version === version) return false;
-    if (state?.approved?.[id]?.version === version) return false;
+    const answer = state?.approved?.[id];
+    if (answer?.version === version && !(answer.declined && answeredBeforeProof(answer, state?.tested?.[id]))) return false;
     return true;
   });
+}
+
+/** Was this recorded verdict given before the proof now on record was sent? */
+function answeredBeforeProof(answer, tested) {
+  const said = Date.parse(answer?.commentAt || answer?.at);
+  const proofed = Date.parse(tested?.at);
+  return Number.isFinite(said) && Number.isFinite(proofed) && said < proofed;
 }
 
 /**
@@ -1274,9 +1294,18 @@ async function collectApprovals(cfg, assets, state) {
     if (!task) continue;
     // normalizeComments resolves the creator and marks the agent's own, so its
     // summaries on its own task can never read as a human saying yes.
-    const verdict = verdictFromComments(normalizeComments(task, { commanders }), commanders);
-    if (!verdict) continue;
+    const comments = normalizeComments(task, { commanders });
     const tested = state.tested?.[id] || {};
+    // Only comments made after THIS proof was sent count: the task outlives
+    // versions, and a verdict on an earlier one is not a verdict on this one.
+    // No recorded test time means no verdict, never "every comment counts".
+    if (!tested.at) { log(`  approvals: no test time recorded for ${id}, so no comment can be matched to its proof`); continue; }
+    const verdict = verdictFromComments(comments, commanders, { since: tested.at });
+    const earlier = verdictFromComments(comments, commanders);
+    if (earlier && earlier.commentId !== verdict?.commentId && Date.parse(earlier.at) < Date.parse(tested.at)) {
+      log(`  approvals: ignored ${earlier.verdict} by ${earlier.by} at ${earlier.at}: posted before this proof was sent (${tested.at})`);
+    }
+    if (!verdict) continue;
     state.approved = state.approved || {};
     state.approved[id] = {
       at: new Date().toISOString(),
@@ -1286,6 +1315,8 @@ async function collectApprovals(cfg, assets, state) {
       by: verdict.by,
       via: "comment",
       taskId: task.id,
+      commentId: verdict.commentId,
+      commentAt: verdict.at,
       ...(verdict.verdict === "decline" ? { declined: true } : {}),
     };
     found.push({ id, verdict: verdict.verdict, by: verdict.by, title: decodeEntities(a.activeVersion?.title || id) });

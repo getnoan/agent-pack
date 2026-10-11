@@ -83,6 +83,16 @@ ok("a re-assigned task has needs-human cleared on pickup", /if \(await unparkTas
 ok("escalate() with a sourceTask files no second task", /if \(!sourceTask\) try \{/.test(rw));
 ok("the park note tells the human what to fix and to re-assign", /Parked: \$\{reason\} Then re-assign me/.test(rw));
 
+// 2026-10-08: a complete one-message answer comes back as "resolve" (an FDA
+// escalation whose gap a person had closed); the task path parked it with the
+// answer's own summary as the reason, and the customer never got the email.
+ok("a resolve verdict is sendable on the task path", /verdict\.action === "reply" \|\| verdict\.action === "resolve"/.test(rw));
+ok("a resolved answer closes the task as done", /resolved[\s\S]{0,400}status: "done", completed: true/.test(rw));
+ok("a resolved answer leaves no open case for the contact", /status: resolved \? "resolved" : "open"/.test(rw));
+ok("a park names the verdict it was", /escalate verdict/.test(rw) && /\$\{verdict\.action\} verdict/.test(rw));
+const csa = readFileSync(new URL("./cs-agent.mjs", import.meta.url), "utf8");
+ok("the outreach prompt allows resolve for a complete one-message answer", /"resolve" when the brief is answered completely/.test(csa));
+
 
 console.log("comments as the hand-back");
 const { supportCommentRearm, SUPPORT_REARM_RX } = await import("./support-scan.mjs");
@@ -109,6 +119,29 @@ ok("wiring: re-arm clears needs-human and assigns Verity", /await unparkTask\(ta
 ok("wiring: the comment text steers the outreach draft", /Teammate guidance \(comments on the task\)/.test(rw));
 ok("wiring: a baseline is stamped on first run", /state\.supportCommentsSince = state\.supportCommentsSince \|\| new Date\(\)\.toISOString\(\)/.test(rw));
 ok("wiring: dry run re-arms nothing", /if \(DRY_RUN\) \{ log\(`  dry-run: would clear needs-human/.test(rw));
+
+console.log("expired cases settle their task");
+const { expiredCasesToSettle, expiredCaseAction, expiredCaseComment, EXPIRED_TASK_MAX_MISSES } = await import("./support-scan.mjs");
+const cases = {
+  "a@x.com": { status: "expired", taskId: "t1", openedAt: "2026-10-02T16:28:15Z", subject: "A correction" },
+  "b@x.com": { status: "open", taskId: "t2" },
+  "c@x.com": { status: "expired" },
+  "d@x.com": { status: "expired", taskId: "t4", taskSettled: "parked" },
+  "e@x.com": { status: "resolved", taskId: "t5" },
+};
+ok("only expired, task-opened, unsettled cases are swept", JSON.stringify(expiredCasesToSettle(cases).map(([k]) => k)) === JSON.stringify(["a@x.com"]));
+ok("an empty or missing ledger sweeps nothing", expiredCasesToSettle(undefined).length === 0);
+ok("an open task is parked", expiredCaseAction(cases["a@x.com"], { id: "t1", status: "in-progress", completed: false }) === "park");
+ok("a task a person already closed is left alone", expiredCaseAction(cases["a@x.com"], { id: "t1", status: "done", completed: true }) === "settled");
+ok("…including completed-but-not-in-done", expiredCaseAction(cases["a@x.com"], { id: "t1", status: "in-progress", completed: true }) === "settled");
+ok("a task missing from the board read is retried", expiredCaseAction({ settleMisses: 0 }, undefined) === "retry");
+ok(`…and given up after ${EXPIRED_TASK_MAX_MISSES} misses`, expiredCaseAction({ settleMisses: EXPIRED_TASK_MAX_MISSES - 1 }, undefined) === "give-up");
+const cmt = expiredCaseComment(cases["a@x.com"], { agentName: "Verity", expiryDays: 14 });
+ok("the comment names the send date and subject", cmt.includes("2026-10-02") && cmt.includes("A correction"));
+ok("the comment says re-assigning does not re-send", /will not send it again/.test(cmt));
+ok("wiring: the support scan settles expired cases right after pruning", /pruneCases\(state\);\n  await settleExpiredCaseTasks\(state\);/.test(rw));
+ok("wiring: an expired case's task is parked through parkForHuman", /reason: "support case expired with no reply"/.test(rw));
+ok("wiring: dry run parks nothing", /if \(DRY_RUN\) \{ log\(`  dry-run: would comment and park/.test(rw));
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

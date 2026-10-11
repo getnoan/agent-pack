@@ -30,7 +30,7 @@ export const ADDRESS = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
 /** RFC 2606 documentation domains, Resend's inbound domain, and template placeholders. */
 export const RESERVED = /@(?:[A-Za-z0-9.-]+\.)?(?:example\.(?:com|net|org)|invalid|test|localhost)\b|@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.example(?![A-Za-z0-9.-])|\.resend\.app$|@\{|\$\{/i;
 /** In comments: the old agent name, the fleet's teammates by first name, the company possessive, the bare domain. */
-export const PROSE = /\bVerity\b|\bNeal\b|\bDan\b|\bHope\b|\bEmre\b|\bNOAN's\b|(?<![\w.])getnoan\.com/;
+export const PROSE = /\bVerity\b|@verity\b|\bNeal\b|\bDan\b|\bDaniel\b|\bHope\b|\bEmre\b|\bNOAN's\b|(?<![\w.])getnoan\.com/;
 /** In code: a brand literal that has no business in a shipped prompt. */
 export const BRAND_LITERAL = /#[0-9a-fA-F]{6}\b|\bTusker\b|\bInter\b|\bAktiv\b|leading-(?:tight|relaxed)/g;
 /** A bare UUID: a row id out of SOMEONE's workspace. Generic code never needs one — in a

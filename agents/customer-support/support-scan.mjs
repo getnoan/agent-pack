@@ -103,3 +103,50 @@ export function supportCommentRearm(task, steering, { cursor = null, since = nul
   const addressing = fresh.filter(c => SUPPORT_REARM_RX.test(c.text));
   return { fresh, rearm: addressing.length ? addressing[addressing.length - 1] : null };
 }
+
+/* ---------------- expired cases close their task (2026-10-07) ----------------
+ *
+ * A support task opens a case, the task goes in-progress, and only
+ * closeCaseTask() takes it out again — which ran solely when the CUSTOMER
+ * replied and the case resolved or escalated. pruneCases() marks an unanswered
+ * case `expired` after CASE_EXPIRY_DAYS and did nothing else, so every outreach
+ * that got no reply left its task in-progress for good. Found on a one-way
+ * correction that by design expected no reply; every task-opened case on the
+ * ledger that day had one turn and had been closed, if at all, by hand.
+ *
+ * Now an expired case with a task PARKS that task: the outreach went out and
+ * nobody answered, which is a person's call (close it, or follow up), not the
+ * agent's. Re-assigning the agent does not re-send — the `sent` ledger entry
+ * still blocks — so the comment says what the options actually are.
+ *
+ * `taskSettled` on the case makes this run once per case. A task the board
+ * read did not return (pagination drops rows; or it was deleted) is retried on
+ * later polls and given up after EXPIRED_TASK_MAX_MISSES, so one vanished task
+ * cannot cost a full board walk every poll forever. */
+
+export const EXPIRED_TASK_MAX_MISSES = 3;
+
+/** Cases whose task still needs settling, as [email, case] pairs. */
+export function expiredCasesToSettle(cases = {}) {
+  return Object.entries(cases || {}).filter(([, c]) => c?.status === "expired" && c.taskId && !c.taskSettled);
+}
+
+/** What to do with an expired case's task, given the live task (or undefined).
+ *  "park"     — still open: hand it to a person.
+ *  "settled"  — already closed (a person got there first): nothing to do.
+ *  "retry"    — not on the board read: try again next poll.
+ *  "give-up"  — missing EXPIRED_TASK_MAX_MISSES times: stop looking. */
+export function expiredCaseAction(kase, task) {
+  if (!task) return (kase?.settleMisses || 0) + 1 >= EXPIRED_TASK_MAX_MISSES ? "give-up" : "retry";
+  if (task.completed || task.status === "done") return "settled";
+  return "park";
+}
+
+/** The comment left on a parked task. Says what happened and what re-assigning
+ *  will NOT do, since the obvious retry is a no-op here. */
+export function expiredCaseComment(kase, { agentName = "the agent", expiryDays = 14 } = {}) {
+  const sent = String(kase?.openedAt || "").slice(0, 10) || "earlier";
+  return `No reply in ${expiryDays} days to the outreach sent ${sent}${kase?.subject ? ` ("${kase.subject}")` : ""}, so the support case has expired. ` +
+    `Close this task if nothing more is needed, or follow up with the contact yourself. ` +
+    `Re-assigning ${agentName} will not send it again.`;
+}

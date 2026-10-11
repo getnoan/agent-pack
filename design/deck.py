@@ -1473,6 +1473,27 @@ def resolve_contacts(cfg, task):
     return out
 
 
+def _link_host(url):
+    """Hostname for an allow-list comparison: lower-cased, a leading "www." dropped.
+    example.com and www.example.com are one site; treating them as two is what
+    parked three decks in nine days (2026-10-01 to 2026-10-09)."""
+    h = (urllib.parse.urlparse(url).hostname or "").lower()
+    return h[4:] if h.startswith("www.") else h
+
+
+def foreign_link_hosts(note, allowed_urls):
+    """Hosts linked in `note` that are not one of `allowed_urls`' hosts, in order
+    of first appearance. Empty means every link is permitted, or there are none.
+    Pure, so the guard can be tested without a model call."""
+    allowed = {_link_host(u) for u in allowed_urls if u}
+    out = []
+    for u in re.findall(r"https?://[^\s\"'<>)]+", note):
+        h = _link_host(u)
+        if h not in allowed and h not in out:
+            out.append(h)
+    return out
+
+
 def draft_cover_note(cfg, contacts, deck_title, slides, history, playbook=None):
     """The agent drafts the short natural email the deck rides in on.
     Returns (subject, text) or None if drafting fails or a guard trips.
@@ -1517,6 +1538,11 @@ def draft_cover_note(cfg, contacts, deck_title, slides, history, playbook=None):
             "will be ATTACHED to this email, sent from you. Write the short cover email it "
             "rides in on, plus a subject line.\n\n"
             f"{playbook}\n\n"
+            # The fact may name the permitted link in words ("the company site"); the guard
+            # below checks a HOST. The model wrote a reasonable variant of the site
+            # address that was not the configured one, three times in nine days, and
+            # each one parked a deck. So the exact URL is stated whatever the fact says.
+            f"{link_rule}"
             f"Open with 'Hi {first},'.\n"
             "Return EXACTLY this format:\nSUBJECT: <subject>\n\n<email body>"
         )
@@ -1546,10 +1572,11 @@ def draft_cover_note(cfg, contacts, deck_title, slides, history, playbook=None):
     subject, note = m.group(1).strip(), m.group(2).strip()
     note = re.sub(r"\s*[—―]\s*", " - ", note)
     subject = re.sub(r"\s*[—―]\s*", " - ", subject)[:80]
-    urls = re.findall(r"https?://[^\s\"'<>)]+", note)
-    allowed_hosts = {urllib.parse.urlparse(u).hostname for u in (cfg.get("subscribe_url"), cfg.get("demo_url")) if u}
-    if any(urllib.parse.urlparse(u).hostname not in allowed_hosts for u in urls):
-        log("  ! cover note contains a link outside the configured URLs; falling back to review email")
+    foreign = foreign_link_hosts(note, [cfg.get("subscribe_url"), cfg.get("demo_url")])
+    if foreign:
+        # Name the host: "a link outside the configured URLs" was the whole record
+        # for three parks, and which link it was had to be guessed.
+        log(f"  ! cover note contains a link outside the configured URLs ({', '.join(foreign)}); falling back to review email")
         return None
     if len(note) > 1200 or len(note.split()) > 160:
         log("  ! cover note too long; falling back to review email")

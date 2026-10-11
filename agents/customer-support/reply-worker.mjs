@@ -59,6 +59,7 @@ import {
   senderDisplayName,
   parkForHuman,
   taskHasTag,
+  postTaskComment,
   unparkTask, assignResolvedOwner, companyName } from "../shared/noan.mjs";
 import { assertModelKey } from "../shared/anthropic.mjs";
 import { planQueuedTask, contactCreatePlan, warnUnregisteredTriggers } from "./command-queue.mjs";
@@ -69,7 +70,7 @@ import { interpretInit, interpretReply, interpretCustomerAsk } from "./schedule-
 import { freeBusy, computeSlots, slotStillFree, createEvent, calendarConfigured, CALENDAR_SECRET } from "./google-cal.mjs";
 import { parseScheduleFact } from "./slots.mjs";
 import { sendEmail } from "../shared/resend.mjs";
-import { supportScanCandidates, supportTaskContactId, supportCommentRearm } from "./support-scan.mjs";
+import { supportScanCandidates, supportTaskContactId, supportCommentRearm, expiredCasesToSettle, expiredCaseAction, expiredCaseComment } from "./support-scan.mjs";
 import { steeringComments, normalizeComments, latestCursor, renderComments } from "../shared/task-comments.mjs";
 import { loadLocalState, saveLocalState, peekState } from "../shared/state-local.mjs";
 import { commanderAuthVerdict } from "./commander-auth.mjs";
@@ -1166,6 +1167,7 @@ async function scanSupportTasks(getContacts, state) {
   if (!brain) return;
   state.taskOutreach = state.taskOutreach || {};
   pruneCases(state);
+  await settleExpiredCaseTasks(state);
 
   const backlog = await noanGetAll(`/tasks?status=backlog&per_page=100`);
 
@@ -1254,13 +1256,30 @@ async function scanSupportTasks(getContacts, state) {
       log(`  outreach drafting failed: ${e.message} — will retry next run`);
       continue;
     }
-    if (verdict.action !== "reply" || !verdict.reply_html || badLinks(verdict.reply_html, verdict.reply_text).length) {
-      await park(task, `${verdict.reason || verdict.issue_summary || "the outreach draft failed its guards"} — fix the task details or the contact.`, contact);
+    // "reply" opens a case and awaits them; "resolve" is a complete answer with
+    // nothing to await (an FDA escalation whose gap a person has since closed,
+    // 2026-10-08: the agent answered the customer in one message, returned resolve, and
+    // this branch parked it with the answer's own summary as the "reason").
+    // Either sends. Anything else is parked, and the park says WHICH verdict
+    // it was: a human reading "fix the task details" for an escalate verdict
+    // went looking for a broken contact that was fine.
+    const sendable = (verdict.action === "reply" || verdict.action === "resolve") && !!verdict.reply_html;
+    if (!sendable) {
+      const why = verdict.reason || verdict.issue_summary || "no draft";
+      await park(task, verdict.action === "escalate"
+        ? `${AGENT_NAME} chose not to open the conversation (escalate verdict): ${why}`
+        : `the outreach draft could not be sent (${verdict.action} verdict, ${verdict.reply_html ? "draft present" : "no draft"}): ${why} — fix the task details or the contact.`, contact);
       continue;
     }
+    const rogue = badLinks(verdict.reply_html, verdict.reply_text);
+    if (rogue.length) {
+      await park(task, `the outreach draft contained non-NOAN links (${rogue.join(", ")}) — fix the brief so the answer needs none.`, contact);
+      continue;
+    }
+    const resolved = verdict.action === "resolve";
 
     // claim the task, send the outreach, open the case
-    try { await noanPatch(`/tasks/${task.id}`, { status: "in-progress" }); } catch {}
+    if (!resolved) { try { await noanPatch(`/tasks/${task.id}`, { status: "in-progress" }); } catch {} }
 
     const subject = (verdict.subject || task.title.replace(LEGACY_MARKER_RX, "").trim() || "Checking in from NOAN").slice(0, 120);
     await sendEmail({
@@ -1270,19 +1289,54 @@ async function scanSupportTasks(getContacts, state) {
       idempotencyKey: `${AGENT_NAME}:cs-outreach:${task.id}`,
     });
 
+    const now = new Date().toISOString();
     state.cases = state.cases || {};
+    // A resolved answer leaves no OPEN case: an open case blocks every later
+    // support task for this contact until it expires (CASE_EXPIRY_DAYS).
     state.cases[contact.email.toLowerCase()] = {
-      id: `task:${task.id}`, taskId: task.id, status: "open",
-      openedAt: new Date().toISOString(), openedBy: "task",
-      subject, turns: [{ at: new Date().toISOString(), who: AGENT_NAME.toLowerCase(), summary: (verdict.reply_text || "").slice(0, 280) }],
+      id: `task:${task.id}`, taskId: task.id, status: resolved ? "resolved" : "open",
+      openedAt: now, openedBy: "task", ...(resolved ? { closedAt: now } : {}),
+      subject, turns: [{ at: now, who: AGENT_NAME.toLowerCase(), summary: (verdict.reply_text || "").slice(0, 280) }],
     };
     try {
-      await addContactMemo(contact.id, `[${AGENT_NAME}] Support outreach (from task) — ${new Date().toISOString().slice(0, 10)}\nTask: ${task.title}\n${AGENT_NAME}: ${(verdict.reply_text || "").slice(0, 600)}`);
+      await addContactMemo(contact.id, `[${AGENT_NAME}] Support ${resolved ? "answer" : "outreach"} (from task) — ${now.slice(0, 10)}\nTask: ${task.title}\n${AGENT_NAME}: ${(verdict.reply_text || "").slice(0, 600)}`);
     } catch {}
-    state.taskOutreach[task.id] = { at: new Date().toISOString(), status: "sent" };
+    state.taskOutreach[task.id] = { at: now, status: "sent" };
     await saveState(state);
-    log(`  ✓ outreach sent to ${TEST_RECIPIENT || contact.email}, case open, task in-progress`);
+    if (resolved) {
+      // Answered in full: the task is done, not in-progress awaiting a reply.
+      try { await noanPatch(`/tasks/${task.id}`, { status: "done", completed: true }); }
+      catch (e) { log(`  warn: could not close ${task.id}: ${e.message}`); }
+      log(`  ✓ answer sent to ${TEST_RECIPIENT || contact.email}, task done (resolve verdict)`);
+    } else {
+      log(`  ✓ outreach sent to ${TEST_RECIPIENT || contact.email}, case open, task in-progress`);
+    }
   }
+}
+
+/** An expired case's task is parked for a person instead of sitting
+ *  in-progress forever — see support-scan.mjs for why. One board read covers
+ *  every case, and only when there is one to settle. */
+async function settleExpiredCaseTasks(state) {
+  const pending = expiredCasesToSettle(state.cases);
+  if (!pending.length) return;
+  let board;
+  try { board = new Map((await noanGetAll(`/tasks?per_page=100`)).map(t => [t.id, t])); }
+  catch (e) { log(`  warn: expired-case sweep could not read the board: ${e.message}`); return; }
+  for (const [email, kase] of pending) {
+    const task = board.get(kase.taskId);
+    const action = expiredCaseAction(kase, task);
+    if (action === "retry") { kase.settleMisses = (kase.settleMisses || 0) + 1; log(`  expired case ${email}: task ${kase.taskId} not on the board read, retrying next poll`); continue; }
+    if (action === "give-up") { kase.taskSettled = "missing"; log(`  expired case ${email}: task ${kase.taskId} not found ${kase.settleMisses + 1} times, giving up`); continue; }
+    if (action === "settled") { kase.taskSettled = "already-closed"; continue; }
+    log(`  expired case ${email}: no reply since ${String(kase.openedAt).slice(0, 10)}, parking task ${kase.taskId}`);
+    if (DRY_RUN) { log(`  dry-run: would comment and park ${kase.taskId}`); continue; }
+    try { await postTaskComment(kase.taskId, expiredCaseComment(kase, { agentName: AGENT_NAME, expiryDays: CASE_EXPIRY_DAYS })); }
+    catch (e) { log(`  warn: expired-case comment failed on ${kase.taskId}: ${e.message}`); }
+    await parkForHuman(task, { lane: "cs", agent: "reply", assignees: HUMAN_ASSIGNEES, reason: "support case expired with no reply", log });
+    kase.taskSettled = "parked";
+  }
+  await saveState(state);
 }
 
 /** When a task-initiated case closes, close its task too. */

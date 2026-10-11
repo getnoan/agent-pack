@@ -152,7 +152,7 @@ function buildUserPrompt({ inbound, body, contact, caseData, openerNote, outreac
       contact.tags?.length ? `Tags: ${contact.tags.map(t => t.name || t).join(", ")}` : ``,
       memoContext ? `\n## Contact history (INTERNAL history in NOAN (meeting summaries, past agent emails, support exchanges). Use it for continuity: know what has already been said or sent, reference genuinely shared history naturally. NEVER quote a memo verbatim, never mention internal notes exist, never reveal anything the contact would not already know.)\n${memoContext}` : ``,
       ``,
-      `Compose the FIRST message to this customer about the issue in the brief: say why you're reaching out (a teammate flagged it / checking in), offer concrete grounded help or ask ONE focused question to get started, and include a subject line. Action must be "reply" (the case opens and awaits their answer) — or "escalate" if the brief is too unclear to act on.`,
+      `Compose the FIRST message to this customer about the issue in the brief: say why you're reaching out (a teammate flagged it / checking in), offer concrete grounded help or ask ONE focused question to get started, and include a subject line. Action must be "reply" (the case opens and awaits their answer); "resolve" when the brief is answered completely in this one message and nothing is awaited from them (a question a teammate has since answered on the task); or "escalate" if the brief is too unclear to act on.`,
       `Ground yourself in the relevant facts first, then call submit_support.`,
     ].filter(Boolean).join("\n");
   }
