@@ -99,8 +99,9 @@ ok("…and not again on every call", lines.length === 0, lines.join(" | "));
   if (saved.key === undefined) delete process.env.ANTHROPIC_API_KEY; else process.env.ANTHROPIC_API_KEY = saved.key;
   if (saved.base === undefined) delete process.env.ANTHROPIC_BASE_URL; else process.env.ANTHROPIC_BASE_URL = saved.base;
   const call = seen.find(c => c.url.endsWith("/v1/messages"));
-  ok("a key set after the module loads reaches the request", call?.key === "sk-set-after-import", JSON.stringify(seen));
-  ok("…and so does an endpoint set after it loads", call?.url === `${GATEWAY}/v1/messages`, JSON.stringify(seen));
+  const urls = seen.map(c => c.url).join(", ");   // never the keys: a failure message is a log line
+  ok("a key set after the module loads reaches the request", call?.key === "sk-set-after-import", urls);
+  ok("…and so does an endpoint set after it loads", call?.url === `${GATEWAY}/v1/messages`, urls);
 }
 
 console.log(`\n${fail ? "FAILED" : "PASSED"}  ${pass} passed, ${fail} failed`);
