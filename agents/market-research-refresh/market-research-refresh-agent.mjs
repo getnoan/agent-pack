@@ -15,7 +15,8 @@
  *   2. draftBlocks — after the worker has executed that plan deterministically via
  *      the Firecrawl search and scrape scripts, the model reads all of it
  *      (plus the company's own internal grounding facts: product/positioning facts for Company
- *      Context, ICP facts for Customer Insights) and
+ *      Context, ICP facts for Customer Insights, and what it sells and to whom for Category
+ *      Dynamics, which the planner also sees) and
  *      returns per-block classification + a full replacement content draft, plus the
  *      report's Key Takeaways / Discussion Points / executive summary. Report assembly
  *      (Sources section, section ordering) is deterministic (renderReport) — the model
@@ -68,10 +69,19 @@ function buildPlanSystemPrompt(brain) {
     `- One blockPlans entry per block you were given, in the same order.`,
     `- Queries should target real, checkable information (recent launches, pricing changes, funding, positioning shifts, industry reports) — not vague topics.`,
     `- Only propose a scrapeUrls entry when the block's CURRENT content already names a specific, checkable page (e.g. a named competitor's own pricing page) — don't invent URLs.`,
+    `- For Category Dynamics, at least one query must look for competitors starting from what the company sells and to whom (the grounding facts in the user message), never from the competitors the block already names. Queries that only re-check named competitors confirm the old list; they cannot tell you it is the wrong list.`,
   ].join("");
 }
 
-function buildPlanUserPrompt({ blocks }) {
+// Shared by both calls: the planner needs it to form discovery queries, the drafter to re-test
+// every named competitor against it.
+function renderCategoryGrounding(facts) {
+  return facts.length
+    ? facts.map(g => `### ${g.title} (\`${g.slug}\`)\n${g.content}`).join("\n\n")
+    : "(no Category Dynamics grounding blocks resolved this run — research and draft competitors from the block alone and say so in changeSummary)";
+}
+
+export function buildPlanUserPrompt({ blocks, categoryDynamicsGrounding = [] }) {
   const lines = blocks.map(b => [
     `### ${b.title} (blockSlug: ${b.slug})`,
     b.content ? b.content : "(no fact recorded yet — research from scratch)",
@@ -79,13 +89,17 @@ function buildPlanUserPrompt({ blocks }) {
   return [
     `Plan this run's research for the 4 Market Research blocks below.`,
     ``,
+    `## What the company sells today and to whom (the yardstick for Category Dynamics — plan at least one competitor-discovery query from this, not from the block's existing list)`,
+    renderCategoryGrounding(categoryDynamicsGrounding),
+    ``,
+    `## Blocks`,
     lines,
   ].join("\n");
 }
 
-export async function planResearch({ blocks, brain }) {
+export async function planResearch({ blocks, brain, categoryDynamicsGrounding = [] }) {
   const system = buildPlanSystemPrompt(brain);
-  const user = buildPlanUserPrompt({ blocks });
+  const user = buildPlanUserPrompt({ blocks, categoryDynamicsGrounding });
   const result = await callClaudeJSON({ system, user, schema: PLAN_SCHEMA, model: MODEL, maxTokens: 4000 });
   // Deterministic safety cap regardless of what the model returned — safeguards live in
   // code, not prompts (the agent standard: mechanics in code, judgement in facts).
@@ -154,13 +168,14 @@ function buildDraftSystemPrompt(brain, playbook) {
     `\n\n## Hard rules`,
     `- Classify each block: confirmed (leave as-is, light polish), refined (same claim, newer specifics — rewrite that subsection, preserve what's still accurate), new (append), or reaffirmed-no-material-change (redraft may be near-identical to baseline — still produce a complete content string).`,
     `- Don't delete content just because this run didn't reconfirm it — only supersede content that's now demonstrably wrong or stale.`,
+    `- For Category Dynamics, a named competitor that no longer competes for the buyer described in the Category Dynamics grounding facts IS stale, even when its own launches and pricing still check out: remove it or move it to the group it now belongs in (adjacent, complement, substitute), and say which and why in changeSummary. When the grounding shows the company's product or buyer has moved, restructuring the competitor groups is a refinement, not a disconnected rewrite.`,
     `- For Company Context specifically: if web research conflicts with an internal NOAN fact provided below, the INTERNAL fact wins in refinedContent — note the external conflict in changeSummary instead, it's still worth knowing even though it doesn't belong in the ground-truth content.`,
     `- No raw URLs or citation markers in refinedContent — citations belong only in sourcesUsedUrls, which the system uses to build the report's Sources section.`,
     `- Every keyTakeaway pairs a finding with its implication for NOAN — never a bare fact with no "so what."`,
   ].join("");
 }
 
-function buildDraftUserPrompt({ blocks, researchByBlock, companyContextGrounding, customerInsightsGrounding }) {
+export function buildDraftUserPrompt({ blocks, researchByBlock, companyContextGrounding, customerInsightsGrounding, categoryDynamicsGrounding = [] }) {
   const blockSections = blocks.map(b => {
     const research = researchByBlock.get(b.slug) || [];
     const researchText = research.length
@@ -191,14 +206,17 @@ function buildDraftUserPrompt({ blocks, researchByBlock, companyContextGrounding
     `## The company's own ICP facts to ground Customer Insights against (who the company has decided it sells to — a relevance filter for findings, not something web research may rewrite)`,
     icpGrounding,
     ``,
+    `## What the company sells today and to whom, to test Category Dynamics against (every named competitor must compete for this buyer, or it comes off the competitor list)`,
+    renderCategoryGrounding(categoryDynamicsGrounding),
+    ``,
     `## Blocks + gathered research`,
     blockSections,
   ].join("\n");
 }
 
-export async function draftBlocks({ blocks, researchByBlock, companyContextGrounding, customerInsightsGrounding = [], brain, playbook }) {
+export async function draftBlocks({ blocks, researchByBlock, companyContextGrounding, customerInsightsGrounding = [], categoryDynamicsGrounding = [], brain, playbook }) {
   const system = buildDraftSystemPrompt(brain, playbook);
-  const user = buildDraftUserPrompt({ blocks, researchByBlock, companyContextGrounding, customerInsightsGrounding });
+  const user = buildDraftUserPrompt({ blocks, researchByBlock, companyContextGrounding, customerInsightsGrounding, categoryDynamicsGrounding });
   // 64000, not 16000: the draft must emit complete replacement content for all four
   // Market Research blocks (~22.6k chars of baseline alone, and a refined draft usually
   // runs longer), plus four changeSummaries and the report sections — JSON-escaped. At

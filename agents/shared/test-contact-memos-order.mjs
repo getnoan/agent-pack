@@ -3,21 +3,11 @@
  * Contact memos come back NEWEST-FIRST, and the reader must respect that.
  *
  * `GET /contacts/{id}` returns `notes` (and `memos`) with the most recent entry
- * at index 0 — verified live 2026-09-04 by writing a memo and finding it at [0].
- * fetchContactMemos read it as newest-LAST: `slice(-maxNotes).reverse()`.
- *
- * That did not merely invert the order. Past maxNotes it dropped the newest
- * memos outright. Live at the time of the fix:
- *
- *   John Marshall      13 memos — the five most recent (2026-09-02) all fell
- *                      outside slice(-8); agents read his history as ending
- *                      2026-08-31.
- *   Stephanie Wiseman   9 memos — lost exactly one, the newest.
- *
- * Twelve workers ground on contact history through this helper, several to
- * answer "what did we last say to this person?" — the question the old slice
- * answered with the oldest thing on file. It hid for months because a contact
- * needs MORE than maxNotes memos before anything is lost, and most have fewer.
+ * at index 0. fetchContactMemos must take the head. A tail slice such as
+ * `slice(-maxNotes).reverse()` does not merely invert the order: past maxNotes
+ * it drops the newest memos outright, so "what did we last say to this
+ * person?" gets the oldest thing on file. Nothing is lost until a contact has
+ * MORE than maxNotes memos, so the tests cover that case.
  *
  * Run:  node test-contact-memos-order.mjs
  */
@@ -39,13 +29,13 @@ ok("keeps the NEWEST, not the oldest", out.includes("day-09 newest"),
 ok("drops the oldest", !out.includes("day-01 oldest"));
 ok("preserves newest-first order", out.indexOf("day-09") < out.indexOf("day-08"));
 
-// The exact live shape that exposed it: more memos than the default cap.
+// More memos than the default cap.
 const thirteen = Array.from({ length: 13 }, (_, i) => `memo ${13 - i}`); // "memo 13" newest
 const dflt = selectRecentMemos(thirteen);
 ok("default cap keeps the newest memo", dflt.includes("memo 13"));
 ok("default cap excludes the oldest", !dflt.includes("memo 1\n") && !dflt.endsWith("memo 1"));
 
-// Fewer memos than the cap — the case that kept this hidden.
+// Fewer memos than the cap: the case where a wrong slice still looks right.
 const few = selectRecentMemos(["b newest", "a oldest"], { maxNotes: 8 });
 ok("a short history returns everything", few.includes("b newest") && few.includes("a oldest"));
 ok("and still newest-first", few.indexOf("b newest") < few.indexOf("a oldest"));

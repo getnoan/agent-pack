@@ -1,97 +1,38 @@
 #!/usr/bin/env node
 /**
- * Newsletter worker: one NOAN asset, one contact tag, one
- * button. Sends a Newsletter-tagged asset to every contact carrying the chosen
- * tag, exactly once each, through the fleet's Resend sender.
+ * Newsletter worker: sends a Newsletter-tagged NOAN asset to every contact
+ * carrying one audience tag, exactly once each, through Resend. No model in the
+ * loop. Two triggers: newsletter.yml (dispatch: dry-run | test | live | cancel)
+ * and NEWSLETTER_MODE=poll from poller.yml three times a day, where an asset
+ * tagged `Test` is test-sent and one approved by comment or tagged `Send` goes
+ * live. The audience is the one non-control tag on the asset a contact carries.
  *
- * No model in the loop. This is a deterministic sender: the issue is written by
- * a person as a NOAN asset, the audience is whoever carries the tag, and
- * everything else here is guards, rendering, and a ledger.
+ * Constraints:
+ * - Live never runs without a test send of the same asset version inside the
+ *   test window. An edit makes a new version, which needs a new test.
+ * - Key every ledger and idempotency key on stableId(), never the list id: the
+ *   list id changes on every edit, so an edited issue would look never-sent.
+ * - Two belts against a double send: the ledger (durable) and Resend's per-chunk
+ *   idempotency key (24 h). NEWSLETTER_NONCE changes both, for a deliberate re-send.
+ * - The audience is the tag. The only subtractions are NEWSLETTER_EXCLUDE_TAGS
+ *   (Unsubscribed and the no-bulk tags), address hygiene and email dedupe.
+ * - Read contacts with a union sweep, never one pass: a single pass misses rows.
+ * - Write no tags onto an asset. The ledger is the receipt.
+ * - The unsubscribe token is hmac_sha256(NEWSLETTER_UNSUB_SECRET, contactId),
+ *   first 32 hex. The site verifies the same formula: change one, change both.
  *
- * TWO TRIGGERS, one worker:
- *
- *   dispatch   `.github/workflows/newsletter.yml` (workflow_dispatch) maps its
- *              inputs onto NEWSLETTER_ASSET / NEWSLETTER_AUDIENCE_TAG /
- *              NEWSLETTER_MODE = dry-run | test | live.
- *
- *   tags       NEWSLETTER_MODE=poll, run 3x/day from poller.yml (asked for
- *              2026-09-07: "could we just add a tag to the email?"). An asset
- *              tagged Newsletter + <audience tag> + `Test` gets test-sent to
- *              NEWSLETTER_TEST_RECIPIENT; tagged + `Send` goes live, gated
- *              exactly as the button is. The audience is the asset's own tag:
- *              of its tags that are not control tags, exactly one must be
- *              carried by at least one contact. Remove the tag before the
- *              poll to abort.
- *
- *              There are no receipt tags, by choice: this worker writes no
- *              tags onto an asset, and the LEDGER is the receipt. (When this
- *              was built, 2026-09-07, the API had no such route: PUT/PATCH/POST
- *              on /assets/{id}/tags and /assets/{id} all 404'd. Since
- *              2026-09-23 the live spec has PUT /assets/{assetId}/tags, body
- *              {tagIds}, and POST /assets takes tagIds on create. The choice
- *              stands: an issue's tags are the author's control surface, and a
- *              receipt must carry the version it ran against, which a tag
- *              cannot.) tested[] and live[] are keyed by the asset's
- *              STABLE id and carry the version they ran against: the same
- *              tags on the same version do nothing twice, and an EDIT makes a
- *              new version, which needs a new Test before Send will run.
- *              Refusals are emailed once per asset version and reason.
- *
- * ASSET IDS MOVE. The list id is `<originalId>-<updatedAt ms>`, so it changes
- * on every edit. Every ledger key and idempotency key here uses stableId():
- * `originalId` when present, else the uuid prefix. Keying on the raw id would
- * make an edited issue look never-sent, which is the one failure this file
- * must never have.
- *
- * THE AUDIENCE IS THE TAG (decided 2026-09-07). Whoever carries the audience
- * tag is in, Churned included; the worker never second-guesses the segment.
- * The only subtractions are the hard stops in NEWSLETTER_EXCLUDE_TAGS
- * (Unsubscribed, plus the tags whose own usage instructions forbid bulk mail),
- * address hygiene, and dedupe on email. Every subtraction is counted by reason
- * in the summary so nothing is invisible.
- *
- * CONTACT READS ARE A UNION SWEEP, never one pass. GET /contacts paginates
- * over a non-deterministic sort and a single pass has been measured to miss
- * ~5%. The residual gap against meta.totalItems is reported, not hidden.
- *
- * TWO BELTS AGAINST A DOUBLE SEND: the ledger (sent[assetId][contactId]) and
- * Resend's idempotency key. Sends go through /emails/batch in chunks of up to
- * 100 (2026-09-21), so the key is per CHUNK, chunkKey(): the slot plus a hash
- * of the chunk's contact ids. The ledger is the durable one; Resend keeps keys
- * for 24 hours. NEWSLETTER_NONCE changes the key AND the ledger slot for a
- * deliberate re-send of an issue.
- *
- * SUBJECT = asset title, PREVIEW TEXT = asset description (decided 2026-09-07).
- * stripFrontMatter() removes Subject / Preview text lines an author left at
- * the top of the body, and the summary says what it removed.
- *
- * UNSUBSCRIBE: every send carries a link to NEWSLETTER_UNSUB_BASE/unsubscribe
- * with the contact id and hmac_sha256(NEWSLETTER_UNSUB_SECRET, contactId) first
- * 32 hex, plus RFC 8058 one-click headers. The company site must verify the
- * same formula and tag the contact Unsubscribed. The formula is pinned by
- * its test upstream here, and should be pinned by the site's own test too;
- * change one, change both.
- *
- * Env:
+ * Env (dispatch modes also need NEWSLETTER_ASSET and NEWSLETTER_AUDIENCE_TAG):
  *   NOAN_PERSONAL_API_KEY / NOAN_AGENT_API_KEY   required
- *   RESEND_API_KEY, MAIL_FROM                    required for test/live/poll
- *   NEWSLETTER_UNSUB_SECRET                      required for test/live/poll (>= 16 chars)
- *   NEWSLETTER_MODE             dry-run | test | live | poll                 default dry-run
- *   NEWSLETTER_ASSET            asset id (either form), or exact title       dispatch modes
- *   NEWSLETTER_AUDIENCE_TAG     contact tag name                             dispatch modes
- *   NEWSLETTER_TEST_RECIPIENT   where test sends go                          required for test/poll, no default
- *   NEWSLETTER_NONCE            re-send escape hatch (see above)
- *   NEWSLETTER_EXCLUDE_TAGS     comma list, config.defaults.env
- *   NEWSLETTER_MAX_RECIPIENTS   live refuses above this                      default 1000
- *   NEWSLETTER_TEST_WINDOW_DAYS live requires a test send this recent        default 7
- *   NEWSLETTER_SEND_SPACING_MS  gap between batch requests (Resend: 2 req/s) default 600
- *   NEWSLETTER_BATCH_SIZE       recipients per /emails/batch request         default 100 (the max)
- *   NEWSLETTER_UNSUB_BASE       REQUIRED for test/live/poll, no default — the origin
- *                               unsubscribe links point at
- *   NEWSLETTER_REPORT_TO        reports and refusals go here                 no default; unset means no report
- *   NEWSLETTER_SUMMARY_OUT      path: markdown summary (job summary)
- *   NEWSLETTER_HTML_OUT         path: rendered HTML (job artifact)
- *   DRY_RUN=1                   poll mode: decide and log, send and write nothing
+ *   RESEND_API_KEY, MAIL_FROM, NEWSLETTER_UNSUB_BASE, NEWSLETTER_UNSUB_SECRET (>= 16 chars):
+ *     required for test/live/poll, no defaults. NEWSLETTER_TEST_RECIPIENT: required for test/poll.
+ *   NEWSLETTER_MODE dry-run | test | live | poll | cancel (default dry-run)
+ *   NEWSLETTER_EXCLUDE_TAGS     comma list, set in config.defaults.env
+ *   Defaults: NEWSLETTER_MAX_RECIPIENTS 1000, NEWSLETTER_TEST_WINDOW_DAYS 7, NEWSLETTER_APPROVAL_DRIFT_PCT 10,
+ *     NEWSLETTER_BATCH_SIZE 100 (max), NEWSLETTER_SEND_SPACING_MS 600
+ *   NEWSLETTER_SEND_AT          send window for the Weekly-tagged issue; empty sends at once
+ *   NEWSLETTER_IMAGE_BASE       where images must be hosted; empty refuses any image
+ *   NEWSLETTER_ASSIGNEES, NEWSLETTER_WEEKLY_ASSIGNEES, NEWSLETTER_REPORT_TO (empty: no report)
+ *   NEWSLETTER_SUMMARY_OUT, NEWSLETTER_HTML_OUT output paths. DRY_RUN=1: send and write nothing.
  */
 
 import { createHash, createHmac } from "node:crypto";
@@ -175,11 +116,9 @@ export function unsubscribeUrl(base, contactId, token, { oneClick = false } = {}
 /**
  * Unfilled placeholders an author left behind.
  *
- * Every other guard here asks whether the issue is well formed; none asked
- * whether it was FINISHED. The 2026-09 issue went to its audience with the
- * literal text `\[calendar link\]` where its booking CTA belonged, having
- * passed the tag check, the length check and the em-dash sanitizer on the way
- * (caught in review 2026-09-15).
+ * Every other guard here asks whether the issue is well formed; this one asks
+ * whether it is FINISHED. A literal `\[calendar link\]` passes the tag check,
+ * the length check and the em-dash sanitizer.
  *
  * Deliberately narrow, because the cost of a false positive is refusing a
  * finished issue:
@@ -212,8 +151,8 @@ export function issueFromAsset(hit) {
   const raw = decodeEntities(hit.activeVersion?.text || "").trim();
   if (!title) return { error: `asset ${stableId(hit)} has no title` };
   const front = stripFrontMatter(raw, title);
-  // The Slack capture's provenance line is for the workspace, not the reader
-  // (decided 2026-09-21): removed, and listed with the front matter.
+  // The Slack capture's provenance line is for the workspace, not the reader:
+  // removed, and listed with the front matter.
   const capture = stripCaptureLines(front.body);
   const body = capture.body;
   const stripped = [...front.stripped, ...capture.removed];
@@ -229,10 +168,8 @@ export function issueFromAsset(hit) {
 }
 
 /*
- * What makes a picture unsendable, checked before anything goes out
- *. Every one of these reached the board as a broken
- * box before it was a rule: the one image an issue ever carried was a
- * `share.google` page link, which is not an image at all.
+ * What makes a picture unsendable, checked before anything goes out.
+ * A `share.google` page link, for one, is not an image at all.
  *
  *   - it sits inside a sentence (an email cannot lay that out)
  *   - its description is missing, or still the words the upload reply suggested
@@ -298,10 +235,10 @@ export function resolveIssue(assets, needle) {
 }
 
 /**
- * The subject is the asset TITLE and the preview text is the asset DESCRIPTION
- * (decided 2026-09-07). Issues drafted before that rule carry their own
- * "Subject:" / "Preview text:" lines and a "---" rule at the top of the body,
- * and some open with a "# Title" that repeats the asset title. None of that
+ * The subject is the asset TITLE and the preview text is the asset DESCRIPTION.
+ * Some issues still carry their own "Subject:" / "Preview text:" lines and a
+ * "---" rule at the top of the body, and some open with a "# Title" that
+ * repeats the asset title. None of that
  * belongs in the email, so it is removed here rather than by hand, and the
  * summary says what was taken out.
  */
@@ -309,9 +246,9 @@ export function stripFrontMatter(text, title = "") {
   const lines = String(text ?? "").split(/\r?\n/);
   const stripped = [];
   let i = 0;
-  // Authors write these bolded far more often than bare, and the bare-only
-  // pattern silently passed `**Subject:** "..."` straight into the body as the
-  // reader's first line (the live 2026-09 issue, caught in review). Leading
+  // Authors write these bolded far more often than bare, and a bare-only
+  // pattern passes `**Subject:** "..."` straight into the body as the
+  // reader's first line. Leading
   // emphasis, heading and quote markers are skipped, and the colon may sit
   // inside or outside the emphasis: `**Subject:**`, `**Subject**:`, `## Subject:`.
   const FM = /^\s*[#>*_\s]*(subject|preview text|pre-?header)\s*[*_]*\s*:/i;
@@ -386,7 +323,7 @@ export function audienceFromAsset(asset, counts, { controlTags = [ISSUE_TAG, CON
  *
  * The weekly issue (tagged WEEKLY_TAG) goes out at one fixed moment (the
  * fleet's is Sunday 09:00 New York, set in config), whenever it was approved.
- * Every other issue goes as soon as it is approved, as before. An approval or a Send tag on Friday or
+ * Every other issue goes as soon as it is approved. An approval or a Send tag on Friday or
  * Saturday hands the emails to Resend at once with `scheduled_at` set to that
  * moment, so delivery is exact and does not depend on when a poll happens to
  * run. An issue approved later on the window's own day (after 09:00 Sunday)
@@ -394,7 +331,7 @@ export function audienceFromAsset(asset, counts, { controlTags = [ISSUE_TAG, CON
  * The button's live mode is "send now" and never scheduled.
  *
  * Spec: "<weekday> <HH:MM> <IANA zone>", e.g. "sun 09:00 America/New_York".
- * Empty means no window: every send is immediate, the behaviour before this.
+ * Empty means no window: every send is immediate.
  */
 const WEEKDAYS = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
 
@@ -471,12 +408,9 @@ export function pollPlan(asset, state) {
   const version = versionOf(asset);
   const actions = [];
   if (tags.has(lower(CONTROL_TAGS.test)) && state?.tested?.[id]?.version !== version) actions.push("test");
-  // Two ways in, one outcome: the Send TAG a person
-  // applies in NOAN, or a commander's approval on the issue's task. The tag
-  // stays because it works; the approval exists because, when it was built,
-  // no agent could write that tag (POST /assets took tagIds on CREATE only;
-  // PUT /assets/{assetId}/tags has existed since 2026-09-23, and this worker
-  // still never writes Send itself, so arming stays a human act).
+  // Two ways in, one outcome: the Send TAG a person applies in NOAN, or a
+  // commander's approval on the issue's task. This worker never writes the
+  // Send tag itself, so arming stays a human act.
   // A DECLINE is recorded on the same key and carries the same version, so
   // "there is an approval record for this version" is not the test - it would
   // arm a send the moment a commander said no. The record must be an approval.
@@ -494,10 +428,8 @@ export function pollPlan(asset, state) {
  * The sweep is ~50 s of pagination over ~790 contacts. poll() runs it as soon
  * as any asset has work, but a send-only plan whose test gate already fails is
  * decided by the ledger alone: liveGate checks `tested` before it ever looks at
- * the audience. An asset left tagged `Send` therefore cost a full sweep every
- * hour, forever, to re-derive a refusal that was already parked and already
- * emailed (measured 2026-09-14: the step went from 2-3 s idle to 50-68 s the
- * moment an asset was tagged, and stayed there five days).
+ * the audience. Without this, an asset left tagged `Send` costs a full sweep
+ * every poll to re-derive a refusal that was already parked and already emailed.
  *
  * `recipients: 1` is a probe, not a count: it holds liveGate's two
  * audience-dependent checks (empty audience, over the cap) clear, so a `false`
@@ -567,9 +499,8 @@ export function refusalTaskExternalId(assetId) {
 /**
  * The test inbox list. Comma separated, deduped, lower-cased, order kept.
  *
- * One address until 2026-09-15, when two more reviewers joined it: a proof
- * copy is the only gate before a live send, and one pair of eyes is a thin
- * gate for the one send in the fleet that reaches the whole list at once.
+ * A proof copy is the only gate before a live send, the one send in the fleet
+ * that reaches the whole list at once, so it can go to several reviewers.
  */
 export function parseRecipients(raw) {
   const seen = new Set();
@@ -588,9 +519,8 @@ export function ledgerSlot(assetId, nonce) {
 }
 
 /**
- * THE BATCH'S IDEMPOTENCY KEY. Resend's key covers
- * one REQUEST, and a request is now up to 100 recipients, so the per-contact key
- * `newsletter:<asset>:<contact>` became a key per chunk, derived from exactly who
+ * THE BATCH'S IDEMPOTENCY KEY. Resend's key covers one REQUEST, and a request
+ * is up to 100 recipients, so the key is per chunk, derived from exactly who
  * is in it: the ledger slot (asset, plus nonce) and a hash of the sorted contact
  * ids.
  *
@@ -750,8 +680,8 @@ function buildMail({ issue, contactId, secret, base }) {
   const bodyMd = sanitizeCopy(issue.body);
   const preheader = sanitizeCopy(issue.description || "");
   const dateLabel = issue.dateLabel || "";
-  // Subject from the asset TITLE, display headline from its DESCRIPTION
-  // (decided 2026-09-15). An asset with no description keeps the title as its
+  // Subject from the asset TITLE, display headline from its DESCRIPTION.
+  // An asset with no description keeps the title as its
   // headline rather than opening on a blank line.
   const html = renderNewsletterHtml({ title: subject, headline: preheader || subject, markdown: bodyMd, unsubscribeUrl: link, preheader, dateLabel, promote: true });
   // The text part from the same parse as the HTML, so it reads as text: no
@@ -784,14 +714,11 @@ async function sendBatchWithRetry(emails, opts) {
 /**
  * A refusal goes on the board, not only into an inbox.
  *
- * The fleet settled this in its CI alert path in 2026-09: an
- * email is an event and a task is a state, and "a human needs to do something"
- * lives on the board, where the weekly board sweep can find it if nobody acts.
- * The newsletter missed that change because a refusal is not a FAILURE — the
- * worker returns cleanly and the step is green, so the workflow's
- * `Alert on failure` step never fires. Its `parked` ledger was a private,
- * unread copy of `needs-human` (2026-09-09 → 09-14: an asset refused on ~120
- * consecutive polls, reported once, and nothing anywhere knew it was stuck).
+ * An email is an event and a task is a state, and "a human needs to do
+ * something" lives on the board, where the weekly board sweep can find it if
+ * nobody acts. A refusal is not a FAILURE: the worker returns cleanly and the
+ * step is green, so the workflow's `Alert on failure` step never fires, and
+ * the `parked` ledger alone is read by nobody.
  *
  * Never throws: a board that is down must not stop the poll reporting by mail.
  */
@@ -872,8 +799,7 @@ async function fileReadyTask(cfg, { assetId, title, tag, count, version, weekly 
 /**
  * The loop closing. The issue this task was filed about has now gone out, so
  * the task is done — written as BOTH fields, because status and completed are
- * stored independently and neither implies the other (283 of 892 tasks drifted
- * that way before the 2026-08-28 repair).
+ * stored independently and neither implies the other.
  *
  * Never throws: the send already happened and the ledger already records it;
  * a board write failing here must not make a delivered issue look failed.
@@ -1243,8 +1169,7 @@ async function dispatch(cfg) {
  *
  * "Answered" means for THIS proof. A decline recorded before the latest test
  * of the same version (a manual re-test) answered the earlier proof, so the
- * board is read again: NEWSLETTER.md has always said a fresh test clears a
- * decline, and until 2026-10-10 nothing re-read it.
+ * board is read again: per NEWSLETTER.md, a fresh test clears a decline.
  */
 export function awaitingApproval(assets, state) {
   return assets.filter(a => {
@@ -1384,7 +1309,7 @@ async function poll(cfg) {
       const r = await runTest(cfg, state, issue, aud.tag, sweep, { via: "tag" });
       const both = p.actions.includes("send");
       // DRY_RUN sends nothing, and that includes the report about the send it
-      // did not make (a dry-run poll on 2026-09-07 emailed a "test sent" report).
+      // did not make.
       if (!cfg.dryRun) await report(cfg, `[newsletter] test sent: ${title}`, r.summary + (both
         ? `\n\nThis asset also carries the ${CONTROL_TAGS.send} tag. The live send to "${aud.tag}" runs on the NEXT poll, after this test has been read. Remove the ${CONTROL_TAGS.send} tag before then to stop it.`
         : `\n\nTo send it live to "${aud.tag}", add the ${CONTROL_TAGS.send} tag to the asset.`));

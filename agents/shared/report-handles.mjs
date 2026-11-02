@@ -2,8 +2,7 @@
  * Report handles — the one vocabulary every scheduled report uses so a reply can name an
  * item and a reader (human or the general agent) knows what acting on it means.
  *
- * Why (audit of 2026-09-08): a commander can now
- * reply to a report email with "do 2 and 4" or "go ahead" and it becomes an assigned general
+ * A commander can reply to a report email with "do 2 and 4" or "go ahead" and it becomes an assigned general
  * task carrying the quoted report. That only has a defined reading if every recommendation
  * is numbered and says whether it is ready to act on or needs a human choice first. The
  * reports are assembled in code from the model's structured answer, so the numbering and

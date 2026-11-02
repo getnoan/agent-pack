@@ -80,5 +80,28 @@ lines = [];
 announceEndpoint({ ANTHROPIC_BASE_URL: GATEWAY }, (m) => lines.push(m));
 ok("…and not again on every call", lines.length === 0, lines.join(" | "));
 
+// --- key and endpoint are read per call -------------------------------------
+// The Mac app loads this module before it restores keys from the Keychain.
+{
+  const { callClaudeRaw } = await import("./anthropic.mjs");
+  const seen = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init = {}) => {
+    seen.push({ url: String(url), key: init.headers?.["x-api-key"] });
+    const body = { id: "m", type: "message", role: "assistant", content: [{ type: "text", text: "hi" }], stop_reason: "end_turn", usage: { input_tokens: 1, output_tokens: 1 } };
+    return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+  };
+  const saved = { key: process.env.ANTHROPIC_API_KEY, base: process.env.ANTHROPIC_BASE_URL };
+  process.env.ANTHROPIC_API_KEY = "sk-set-after-import";
+  process.env.ANTHROPIC_BASE_URL = GATEWAY;
+  await callClaudeRaw({ model: "m", max_tokens: 8, messages: [{ role: "user", content: "hi" }] }).catch(() => {});
+  globalThis.fetch = realFetch;
+  if (saved.key === undefined) delete process.env.ANTHROPIC_API_KEY; else process.env.ANTHROPIC_API_KEY = saved.key;
+  if (saved.base === undefined) delete process.env.ANTHROPIC_BASE_URL; else process.env.ANTHROPIC_BASE_URL = saved.base;
+  const call = seen.find(c => c.url.endsWith("/v1/messages"));
+  ok("a key set after the module loads reaches the request", call?.key === "sk-set-after-import", JSON.stringify(seen));
+  ok("…and so does an endpoint set after it loads", call?.url === `${GATEWAY}/v1/messages`, JSON.stringify(seen));
+}
+
 console.log(`\n${fail ? "FAILED" : "PASSED"}  ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

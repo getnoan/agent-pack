@@ -7,15 +7,13 @@
  *                          a scheduling request, who with, how long, about what?
  *   interpretReply       — the other side's answer: which offered slot (or
  *                          counter-proposal / decline / unclear)?
- *   interpretCustomerAsk — the customer-initiated direction (2026-07-25): is a
+ *   interpretCustomerAsk - the customer-initiated direction: is a
  *                          customer mid-thread clearly asking to book time with
  *                          a named teammate? Gated by MEETING_RX in the worker
  *                          so ordinary email never reaches the classifier.
  *
- * This header said "the two MODEL steps" until 2026-09-06; interpretCustomerAsk
- * had been here since July. All three are single forced-tool calls, and the
- * model has no read or write tools at all — stricter than read-only, because
- * there is nothing for it to reach even in principle.
+ * All three are single forced-tool calls. The model has no read or write
+ * tools at all, so there is nothing for it to reach.
  */
 
 import { postMessages } from "../shared/anthropic.mjs";
@@ -23,13 +21,10 @@ import { companyName } from "../shared/noan.mjs";
 import { agentName } from "../shared/required-env.mjs";
 
 const MODEL = process.env.SCHEDULE_MODEL || "claude-opus-5";
-// Claude Opus 5 (2026-09-09): thinking is on by default. Keep it explicit
-// (adaptive, low effort: the cheap setting that still avoids
-// tool-calls-as-text). The refusal fallbacks that used to be set here by hand
-// now come from postMessages, which opts every Opus 5 request in — and which
-// carries the prompt-cache breakpoints this agent never had (caching brief
-// 2026-09-09, P2): system + tools cache across a run, so per-task data must
-// stay in messages, never in the system prompt.
+// Opus 5 thinks by default. Keep it explicit (adaptive, low effort) so it
+// does not emit tool calls as text. postMessages sets the refusal fallbacks and
+// the prompt-cache breakpoints: system + tools cache across a run, so per-task
+// data must stay in messages, never in the system prompt.
 // Adaptive thinking + effort are Opus/Sonnet-tier params (Haiku 400s on
 // them), so an env override to a smaller model sends neither.
 const THINKING = /^claude-(opus|sonnet)/.test(MODEL)
@@ -147,9 +142,8 @@ export async function interpretReply({ body, offeredSlots, timeZone, senderEmail
 
 /**
  * interpretCustomerAsk — a CUSTOMER in an email thread with the agent asks to
- * set up time with a teammate ("can we get 30 min with Sam?"). Added
- * 2026-07-25 after a customer's ask got escalated instead of scheduled: customers
- * can now initiate the scheduling flow, with the teammate as calendar owner.
+ * set up time with a teammate ("can we get 30 min with Sam?"). The teammate
+ * is the calendar owner.
  * Conservative: only wants_meeting=true when they are clearly asking to
  * arrange a live conversation, not merely mentioning a call.
  */

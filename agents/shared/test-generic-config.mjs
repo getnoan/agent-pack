@@ -3,12 +3,11 @@
  * Nothing about OUR company is a default in code that ships in the agent pack.
  *
  * The pack is a one-way export of these files, run by other companies against
- * their own NOAN workspaces. Until 2026-09-16 the export signed mail as Verity,
- * treated any @getnoan.com address as a teammate (comment steering AND the
- * commander DKIM gate), linked only to app.getnoan.com, emailed reports to a
- * "Growth Team" tag, and wrote "You are NOAN's ..." into every prompt. Each of
- * those now comes from configuration with a neutral fallback; the fleet's own
- * values live in agents/config.defaults.env, which never ships.
+ * their own NOAN workspaces. The sender name, the teammate domain (comment
+ * steering AND the commander DKIM gate), the allowed links, the report tag and
+ * the company name in prompts all come from configuration with a neutral
+ * fallback. The fleet's own values live in agents/config.defaults.env, which
+ * never ships.
  *
  * Two halves: the helpers behave as documented with the variables unset and
  * set, and a sweep of the pack's actual closure proves no shipped module still
@@ -123,14 +122,12 @@ ok("every lane reply-worker loads is on BUSINESS_LANES", loaded.length >= 5 && u
 const leaked = LANE_MODULES.filter(m => closure.has(m));
 ok("no NOAN business lane is reachable from the six agents", leaked.length === 0, leaked.join(", "));
 /* ---------------- ratchets ----------------
- * Two classes found by the sweeps below are PRE-EXISTING at a known count, and clearing them is
- * its own work: 34 comments citing fleet-only files. Gating them at zero today would make every unrelated PR red,
- * and a check that is always red is a check nobody reads — the same failure these sweeps exist
- * to prevent. So they are RATCHETED: the count may never grow, and when it falls the baseline
- * must come down with it, which is what stops a ratchet quietly becoming a waiver.
+ * Comments citing fleet-only files exist at a known count. They are RATCHETED, not gated at
+ * zero: the count may never grow, and when it falls the baseline must come down with it, so the
+ * ratchet never becomes a waiver.
  *
  * Lower these numbers. Never raise one to make a build pass. */
-const UNSHIPPED_BASELINE = 34;   // 2026-09-21. Lower me.
+const UNSHIPPED_BASELINE = 31;   // Lower me.
 
 /** Fail on growth, and fail on shrinkage that was not recorded.
  *
@@ -167,12 +164,9 @@ for (const f of SHIPPED_SCRIPTS) offenders.push(...sweepCode(f, stripPython(read
 ok("no shipped module names our domain, our agent, or an address in code", offenders.length === 0, "\n      " + offenders.join("\n      "));
 
 /* Every contact create goes through createContact(), which treats a duplicate refusal as a find.
- * noan.mjs's docblock told a reader of the SHIPPED file that a test fails CI on a return to the
- * raw call — true upstream, where test-contact-create-409.mjs enforces it, and false here: that
- * test reads slack-hosted/ and so never ships. This is the same rule over the pack's own closure,
- * so the promise is kept in the tree that makes it. Matters more downstream, not less: a fork
- * that regresses to a raw post makes permanent duplicates in ITS workspace, and `q=` will not
- * find them (test-contact-email-lookup.mjs). */
+ * test-contact-create-409.mjs enforces this upstream but never ships, so this applies the same
+ * rule over the pack's own closure. A raw post in a fork makes permanent duplicates that `q=`
+ * will not find. */
 const rawCreates = [];
 for (const f of [...closure].sort()) {
   if (f === "noan.mjs") continue;   // noan.mjs IS the wrapper; its own raw POST is the legitimate one
@@ -186,37 +180,24 @@ ok("…and that guard matches the shape it bans",
 
 /* The SHIPPED TESTS, for workspace ids only.
  *
- * The closure swept above is modules; tests are deliberately excluded from it, because
- * test-fleet-env.mjs exists to carry the fleet's own name and domain and the DKIM fixtures in
- * test-commander-auth.mjs are our domain on purpose. That exclusion was right about names and
- * wrong about ids: on 2026-09-20 two shipped tests carried REAL records — a live contact id in
- * test-support-scan.mjs and a customer's address in test-contact-email-lookup.mjs — as fixtures
- * that only ever needed a plausible SHAPE. A fleet address in a fixture is arguably our own to
- * ship; a row id or a customer is someone else's.
- *
- * So: ids only. Never legitimate in a fixture, and no judgement call about whose domain it is. */
+ * The closure swept above is modules; tests are excluded from it, because test-fleet-env.mjs
+ * carries the fleet's own name and domain and the DKIM fixtures in test-commander-auth.mjs are
+ * our domain on purpose. Real record ids are never legitimate in a fixture, which only needs a
+ * plausible SHAPE, so shipped tests are swept for ids only. */
 /* Which tests ship: SHIPPED_TESTS in oss-sweeps.mjs, the one list the exporter also reads as
- * EXTRA_TESTS. This block used to parse that list out of the exporter's SOURCE, to avoid
- * importing a module that calls cleanOut() at import time. That broke silently the moment the
- * exporter became `const EXTRA_TESTS = [...SHIPPED_TESTS];`: the regex ran on to the next `\n]`
- * in the file and swept six unrelated names, so the guard kept passing over the wrong set.
- * Reading the shipped constant needs no parsing and no fallback — it ships, so it is here. */
+ * EXTRA_TESTS. Import the constant. Do not parse the exporter's source for it: a regex over
+ * that file can silently match the wrong set. */
 const testIds = [], testPointers = [];
 for (const f of [...SHIPPED_TESTS].sort()) {
   let src; try { src = readFileSync(agentFile(f), "utf8"); } catch { continue; }
   // NOT stripComments: a fixture id and a cited id are the same disclosure, and stripping
   // first is how a comment in a shipped test went unchecked.
   for (const u of src.match(WORKSPACE_ID) || []) if (!SYNTHETIC_ID.test(u)) testIds.push(`${f} ${u}`);
-  /* Pointers, for the same reason and on the same argument the docblock above makes about ids:
-   * a plan doc, a fleet task id or a private issue number is no more followable in a FIXTURE
-   * than in a comment, and neither is a judgement call about whose domain it is. The exclusion
-   * was right about names, wrong about ids (fixed 2026-09-20), and wrong about pointers too —
-   * the pre-publication review's item 6 was a shipped test carrying a fleet task id and a
-   * private issue number, fixed by hand with nothing left to stop it coming back.
+  /* Pointers too: a plan doc, a fleet task id or a private issue number is no more followable
+   * in a FIXTURE than in a comment.
    *
-   * Names stay exempt, deliberately: test-fleet-env.mjs carries the fleet's name and domain on
-   * purpose, and this file has to spell "Verity" out to assert its absence. Measured at zero
-   * hits across the 14 shipped tests before switching on, so this pins the tree, not a backlog. */
+   * Names stay exempt: test-fleet-env.mjs carries the fleet's name and domain on purpose, and
+   * this file has to spell "Verity" out to assert its absence. */
   src.split("\n").forEach((line, i) => {
     const p = line.match(PRIVATE_POINTER_NO_ID);
     if (p) testPointers.push(`${f}:${i + 1} ${p[0].trim()} — ${line.trim().slice(0, 80)}`);
@@ -227,10 +208,8 @@ ok(`no shipped test carries a real workspace id (${SHIPPED_TESTS.length} tests)`
 ok(`no shipped test cites private history (${SHIPPED_TESTS.length} tests)`, testPointers.length === 0,
    testPointers.length ? `\n      ${testPointers.join("\n      ")}` : "");
 
-/* The data files too. This hole was structural, not a missing pattern: the phrase that rode out
- * in comment-grammar.json's `_readme` on the first public export was ALREADY in PRIVATE_POINTER,
- * and matched it — a .json simply has no comments for the prose sweep and is not source for the
- * code sweep, so neither ever opened the file. See sweepData for why the root docs are not on
+/* The data files too: a .json has no comments for the prose sweep and is not source for the
+ * code sweep, so without this neither opens it. See sweepData for why the root docs are not on
  * this list. */
 const dataHits = [];
 for (const f of [...SHIPPED_ASSETS].sort()) {
@@ -241,7 +220,7 @@ ok(`no shipped data file carries our identity or private history (${SHIPPED_ASSE
    dataHits.length === 0, dataHits.length ? `\n      ${dataHits.join("\n      ")}` : "");
 
 /* The prose too. Comments and docblocks ship with the code, and a stranger
- * reading "re-assign Verity" or "(Neal, 2026-09-07)" is reading about a
+ * reading "re-assign Verity" or a teammate's first name is reading about a
  * company they do not work for. Code was swept above with comments stripped;
  * this is the inverse: only the comments, for the old agent name, the
  * fleet's teammates by first name, the company possessive, and the bare
@@ -257,24 +236,14 @@ const prose = [];
   ok("deck.py's build prompt carries no brand literal (hex, typeface, leading token)", promptLength > 1000 && literals.length === 0, literals.join(", "));
   ok("deck.py reads the slide design rules from the Deck Playbook fact", /def load_slide_rules\(/.test(deckPy) && /## Slide design/.test(deckPy));
 }
-// agent_comment.py was missing from this list until 2026-09-21: it SHIPS (it is in the
-// exporter's DESIGN_FILES) and was therefore the one shipped module whose comments nothing
-// prose-swept. Found by the unshipped-reference check below reporting it as unshipped.
+// Every Python file in the exporter's DESIGN_FILES belongs here, or its comments go unswept.
 const DESIGN_PY = ["deck.py", "park_assignees.py", "slack_pointer.py", "comment_grammar.py", "agent_comment.py"]
   .map(f => path.join(DESIGN, f));
 // What the pack actually contains, so a comment citing anything else is caught as a reference
 // the reader cannot follow. Built from the closure rather than listed, so it tracks the export.
 const SHIPPED = new Set([...closure, ...DESIGN_PY.map(f => path.basename(f)), ...SHIPPED_SCRIPTS.map(f => path.basename(f)), ...SHIPPED_TESTS, ...SHIPPED_TOOLS, "config.example.json"]);
-// pointers: true. A plan doc, a fleet task id or an internal service name in a comment is as
-// useless to a stranger as our name is, and until now only the UUID half ran downstream — the
-// rest sat behind a flag that only the upstream readiness tool passed. That is how eight
-// citations of a private plan doc shipped — named here verbatim until the shipped-test sweep
-// above started reading this file too. Measured at zero hits before switching it on, so this
-// pins the tree where it is rather than papering over a backlog.
-// The `run|job <digits>` alternative was added later, on the same terms: measured at 3 hits in
-// shipped code first (two of which had already reached the public pack, because no existing
-// alternative matched the parenthesised `run <id>` form), those three cleaned, then switched
-// on at zero.
+// pointers: true. A plan doc, a fleet task id, a CI run id or an internal service name in a
+// comment is as useless to a stranger as our name is, so the full pointer sweep runs here too.
 for (const f of [...[...closure].sort().map(f => agentFile(f)), ...DESIGN_PY, ...SHIPPED_SCRIPTS.map(f => agentFile(f))]) prose.push(...sweepProse(path.basename(f), readFileSync(f, "utf8"), { shipped: SHIPPED, pointers: true }));
 const unshipped = prose.filter(p => / unshipped /.test(p));
 const strictProse = prose.filter(p => !/ unshipped /.test(p));

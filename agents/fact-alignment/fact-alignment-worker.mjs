@@ -51,6 +51,9 @@ import { peekState, saveLocalState } from "../shared/state-local.mjs";
 import { renderReportEmailHtml } from "../shared/markdown-email.mjs";
 import { runFactAlignmentAgent, renderReport, renderReportForNote, genuineCandidates, triageCoverage, buildManifest, manifestWindowKey } from "./fact-alignment-agent.mjs";
 import { isRetiredStack, isRetiredBlock } from "./retired-stack.mjs";
+import { factSizeFindings } from "./fact-size-check.mjs";
+import { registrySlugs } from "../shared/capability-targets.mjs";
+import { fieldsBoundBlocks, flagFieldsDrafts } from "./space-fields.mjs";
 
 const CONFIG_SLUG = process.env.FACT_ALIGNMENT_CONFIG_BLOCK_SLUG;
 const PLAYBOOK_SLUG = process.env.FACT_ALIGNMENT_PLAYBOOK_BLOCK_SLUG;
@@ -78,8 +81,8 @@ const EXTRA_REVIEW_ASSIGNEES = (process.env.FACT_ALIGNMENT_REVIEW_ASSIGNEES || "
  * occurrence of DUE_WEEKDAY on or before `today`. Independent of when this script
  * actually executes — a cron firing exactly on schedule, a delayed/jittered run, or
  * an ad hoc/test run on any other day all resolve to the same Mon-Sun week a fully
- * on-schedule run would have used, instead of drifting to reflect wall-clock
- * execution time (the previous lastRun-to-now approach).
+ * on-schedule run would have used, never a window that drifts with wall-clock
+ * execution time.
  */
 function calendarWeekWindow(dueWeekday, today) {
   const diff = (today.getUTCDay() - dueWeekday + 7) % 7;
@@ -101,7 +104,7 @@ function log(...a) { console.log(new Date().toISOString(), ...a); }
  * visible without being re-argued every week.
  *
  * A missing or unreadable site-scan ledger is not an error here: the scan is a separate,
- * optional automation and this report predates it.
+ * optional automation.
  */
 export function latestSiteScan(siteState, priorRunIso) {
   const runs = siteState?.runs;
@@ -239,13 +242,9 @@ function looksLikeAutomationReport(title) {
 // reviews the report. Deliberately reuses FACT_CANDIDATE_RX so the note exclusion can never
 // drift away from the task prefix it mirrors.
 //
-// The content is checked as well as the title, because a capture written through the NOAN MCP
-// server cannot set a title at all: create_note takes only `content`, and the server derives
-// the title itself — rewriting it rather than copying the first line, and dropping a bracketed
-// prefix while doing so. Measured live 2026-09-19: content beginning
-// "[Fact Candidate] MCP prefix-survival probe 2026-09-19" came back titled
-// "MCP Prefix-Survival Probe 2026-09-19". A title-only check therefore misses every MCP-written
-// capture note, and does so invisibly — the note has a perfectly good title, just not that one.
+// The content is checked as well as the title, because an MCP create_note without a title gets
+// one the server writes itself, with the bracketed prefix dropped. Older copies of the capture
+// skill write their notes that way and put the prefix on the first line of the content instead.
 //
 // Only the first non-empty line counts. Matching anywhere in the body would swallow any note
 // that merely discusses the convention, which is the opposite failure: a real find, silently
@@ -398,13 +397,21 @@ async function main() {
 
   const { stackTitleBySlug, inScopeBlocks } = await loadScope(updatedRelevantStackSlugs);
   const factsByBlock = await loadAllFacts();
+  // Every fact in the project, in scope or not: a fact past the cap cannot be rewritten once it
+  // is enforced, wherever it lives (fact-size-check.mjs).
+  const factSizes = factSizeFindings([...factsByBlock.values()], { registry: registrySlugs() });
+  log(`  fact sizes: ${factSizes.length ? factSizes.map(f => `${f.slug} ${f.chars} (${f.level})`).join(", ") : "every fact under the warning line"}`);
   const { gapBlocks, skippedEmpty } = partitionGaps(inScopeBlocks, factsByBlock, updatedDeliberatelyEmptyBlockSlugs);
   // BlockListItem.stack only carries {id,slug} — resolve display titles via the stack map.
   const stackTitleOf = b => stackTitleBySlug.get(b.stack?.slug) || b.stack?.slug || "unknown stack";
   const filledInScopeBlocks = inScopeBlocks
     .filter(b => factsByBlock.has(b.slug))
     .map(b => ({ slug: b.slug, title: b.title, stackTitle: stackTitleOf(b), content: capFact(factsByBlock.get(b.slug).content) }));
-  const gapBlocksWithTitles = gapBlocks.map(b => ({ slug: b.slug, title: b.title, stackTitle: stackTitleOf(b) }));
+  // A gap an App Kit page reads through `fields <-` (a Space's Brief) only shows `Label: value`
+  // lines, so its draft is told that shape up front and checked against it afterwards.
+  const fieldsBound = fieldsBoundBlocks(gapBlocks.map(b => ({ slug: b.slug, title: b.title, stackTitle: stackTitleOf(b) })), [...factsByBlock.values()].map(f => f.content));
+  const gapBlocksWithTitles = gapBlocks.map(b => ({ slug: b.slug, title: b.title, stackTitle: stackTitleOf(b), fields: fieldsBound.get(b.slug) || null }));
+  if (fieldsBound.size) log(`  ${fieldsBound.size} gap(s) rendered by an app as Label: value fields: ${[...fieldsBound.values()].map(f => `${f.title} in "${f.app}"`).join(", ")}`);
 
   const anomalies = await computeAnomalies(factsByBlock, inScopeBlocks);
   log(`  ${inScopeBlocks.length} in-scope block(s), ${gapBlocks.length} gap(s) (${skippedEmpty.length} more marked deliberately empty), ${anomalies.length} anomal(y/ies)`);
@@ -419,6 +426,8 @@ async function main() {
     anomalies,
     brain,
   }, { log });
+  const misshapen = flagFieldsDrafts(result.gaps, fieldsBound);
+  if (misshapen.length) log(`  warn: ${misshapen.length} fields-bound gap draft(s) would not render as written, flagged and marked not applicable: ${misshapen.map(g => g.blockSlug).join(", ")}`);
   const candidates = genuineCandidates(result);
   const coverage = triageCoverage(result, { taskCount: genericCandidateTasks.length, noteCount: notesCandidates.length });
   log(`  ${result.gaps.length} gap(s) drafted, ${result.contradictions.length} contradiction(s), ${result.overlaps.length} overlap(s), ${candidates.length} genuine candidate(s) (${coverage.reviewed} of ${genericCandidateTasks.length + notesCandidates.length} reviewed)`);
@@ -447,7 +456,7 @@ async function main() {
   const applicableCount = manifest.entries.filter(e => e.applicable).length;
   log(`  manifest ${manifest.windowKey}: ${manifest.entries.length} recommendation(s), ${applicableCount} with a concrete block + drafted content`);
 
-  const reportOpts = { windowLabel, result, manifest, site, missingFactReviewTag, malformedCaptures, deliberatelyEmptyCount: skippedEmpty.length, emptyRecipients: false };
+  const reportOpts = { windowLabel, result, manifest, site, missingFactReviewTag, malformedCaptures, factSizes, deliberatelyEmptyCount: skippedEmpty.length, emptyRecipients: false };
   // The email carries the report in full. The note is the same report with its quoted bodies
   // clipped to whatever fits the note character cap — see renderReportForNote. Both are
   // rendered here so the dry-run shows exactly what each channel would receive.

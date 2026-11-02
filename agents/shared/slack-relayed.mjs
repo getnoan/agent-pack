@@ -15,8 +15,8 @@
  * FAIL-SAFE BY SHAPE, as agent-comment.mjs is. A comment that LOOKS relayed is
  * never attributed to the key owner, whether or not it verifies: verified, it
  * belongs to the speaker; unverified, it belongs to nobody and is dropped. The
- * shape check also catches the unsigned form the hosted app wrote for a day
- * (2026-09-18), so those are dropped too rather than read as the owner's.
+ * shape check also catches the unsigned form, so it is dropped too rather than
+ * read as the owner's.
  *
  * Pure: no network, no state.
  */

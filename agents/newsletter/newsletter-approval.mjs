@@ -19,17 +19,13 @@ import { commentText } from "../shared/task-comments.mjs";
 const escapeRx = s => String(s).replace(/[.*+?^${}()|[\]\\]/g, m => "\\" + m);
 const LEAD = () => "^\\s*(?:@?" + escapeRx(agentName()) + "[,:\\s]+)?";
 const APPROVE_RX = () => new RegExp(LEAD() + "(approve[ds]?|send(?:\\s+it)?|go\\s+ahead)\\b", "i");
-// The apostrophe class takes the curly one too. macOS and iOS type "Don’t" by
-// default, and before 2026-10-10 "Don’t send" matched NOTHING here: neither a
-// decline nor an approve, so a commander's no was silently dropped.
+// The apostrophe class takes the curly one too: macOS and iOS type "Don’t" by
+// default, and a "Don’t send" that matched nothing would drop a commander's no.
 const DECLINE_RX = () => new RegExp(LEAD() + "(no|hold|stop|wait|not\\s+yet|don['’]?t|do\\s+not)\\b", "i");
 
 /**
- * "Don't <do something>" addressed to the drafter is steering, not a verdict.
- *
- * 2026-10-10: "@<agent> dont offer to book a demo at the end…" on an
- * issue's review task was read as a DECLINE, and because the first verdict
- * wins it would have locked out the "send" a commander gave the fixed version.
+ * "Don't <do something>" addressed to the drafter is steering, not a verdict,
+ * so "@<agent> dont offer to book a demo" does not lock out a later "send".
  *
  * Deliberately the ONLY carve-out, and a narrow one. Every other opener
  * (no / hold / stop / wait / not yet) stays a decline however it continues,
@@ -117,10 +113,7 @@ export function approvalBindingsOk(approval, { version, tag, recipients, driftPc
  *
  * `since` is when the proof being judged was test-sent (state.tested[id].at),
  * and a comment older than that is not a verdict on it: the copy it answered no
- * longer exists, or had not been sent yet. Without it, "first wins" ran across
- * EVERY version on the task — a decline on version 1 locked out every later
- * version (2026-10-10), and an approve on version 1 armed version 2 after an
- * edit and re-test, despite the card saying an edit needs a fresh yes. Passed,
+ * longer exists, or had not been sent yet, and an edit needs a fresh yes. Passed,
  * it fails closed: a comment whose time cannot be read is skipped, and an
  * unreadable `since` admits nothing.
  */
@@ -129,16 +122,9 @@ export function verdictFromComments(comments, commanders, { since } = {}) {
   if (since !== undefined && !Number.isFinite(floor)) return null;
   for (const c of comments || []) {
     // NOT a human. normalizeComments marks an agent-authored comment
-    // `kind: "self"` (its creator.id is one of the agent's identity ids);
-    // there is no `fromAgent` field and checking for one made this guard
-    // INERT, so an assistant-written "approve" whose creator address happened
-    // to be a commander armed a live send. Both spellings are accepted now
-    // because a raw API comment has neither.
-    //
-    // Which is why the ONLY caller passes normalizeComments(...) and a raw
-    // comment must never be passed here: since 2026-09-18 the payload carries
-    // no createdByAssistant, so a raw comment has nothing to mark it as the
-    // agent's own — `kind` is the entire guard.
+    // `kind: "self"` (its creator.id is one of the agent's identity ids).
+    // Never pass a raw API comment here: it carries nothing that marks it as
+    // the agent's own, so `kind` is the entire guard.
     if (c?.kind === "self" || c?.fromAgent) continue;
     const email = c?.creator?.email || c?.email;
     if (!isApprover(email, commanders)) continue;

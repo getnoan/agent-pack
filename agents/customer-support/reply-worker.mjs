@@ -1,29 +1,24 @@
 #!/usr/bin/env node
 /**
- * NOAN reply agent — worker. Runs every 15 min.
+ * NOAN reply agent worker. Runs every 15 min.
  *
  * The agent's outbound mail carries Reply-To: <agent>@<id>.resend.app, so customer
  * replies land in Resend Inbound. This worker:
  *
- *   1. Polls GET https://api.resend.com/emails/receiving (no webhook server
- *      needed — fits the launchd/cron architecture of the other agents).
- *   2. Skips anything already in the ledger (a NOAN fact block), anything from
- *      an auto-responder/bounce address, and our own sends.
- *   3. Matches the sender to a NOAN contact by email — or, since 2026-09-09,
- *      creates one from the email (live exact-address dedupe first, untagged,
- *      provenance memo) so a first-time sender is answered, not parked.
+ *   1. Polls GET https://api.resend.com/emails/receiving.
+ *   2. Skips anything in the ledger, from an auto-responder/bounce address, or our own.
+ *   3. Matches the sender to a NOAN contact by email, or creates one from the email
+ *      (live exact-address dedupe first, untagged, provenance memo).
  *   4. Runs the drafting model (READ-ONLY NOAN tools) which must choose:
  *        reply    → grounded answer, sent in the same thread (In-Reply-To)
  *        escalate → NO auto-answer; the inbound is forwarded to a human
  *                   (ESCALATE_TO) and a needs-human NOAN task is created.
- *      Low confidence or any guard failure also escalates (an unknown sender
- *      no longer does on its own — only a failed contact create).
+ *      Low confidence, any guard failure or a failed contact create also escalates.
  *   5. Records a memo on the contact, marks the email processed.
  *
- * Loop safety: auto-responder/bounce senders are skipped outright; at most
- * MAX_REPLIES_PER_SENDER_PER_DAY (default 3) auto-replies per sender per day —
- * beyond that, escalate. Idempotency: ledger keyed by Resend inbound email id;
- * Resend Idempotency-Key on every send.
+ * Loop safety: auto-responder/bounce senders are skipped outright; past
+ * MAX_REPLIES_PER_SENDER_PER_DAY (default 3) auto-replies per sender per day, escalate.
+ * Idempotency: ledger keyed by Resend inbound email id; Idempotency-Key on every send.
  *
  * TEST mode: while TEST_RECIPIENT is set, replies AND escalation forwards all
  * go to TEST_RECIPIENT instead of the real sender / ESCALATE_TO.
@@ -31,15 +26,12 @@
  * Extra env beyond the onboarding agent's:
  *   REPLY_CONFIG_BLOCK_SLUG / REPLY_PLAYBOOK_BLOCK_SLUG
  *   (state ledger: local file ~/.verity-agents/state/reply.json — see state-local.mjs)
- *   ESCALATE_TO                    REQUIRED, no default — where anything this
- *                                  agent cannot answer is forwarded
- *   REPLY_HUMAN_ASSIGNEES          identity ids for needs-human follow-ups;
- *                                  unset = the key's own identity
+ *   ESCALATE_TO                    REQUIRED, no default: where unanswerable mail goes
+ *   REPLY_HUMAN_ASSIGNEES          needs-human follow-up ids; unset = the key's own identity
  *   MAX_REPLIES_PER_RUN            default 5
  *   MAX_REPLIES_PER_SENDER_PER_DAY default 3
  *   REPLY_ONLY_EMAIL_ID=<id>       process exactly this inbound email — testing
- *   PROSPECT_FOLLOWUP_ASSIGNEES    identity ids for the follow-up task a "sent N"
- *                                  digest reply files (prospector-replies.mjs)
+ *   PROSPECT_FOLLOWUP_ASSIGNEES    ids for the task a "sent N" digest reply files (prospector-replies.mjs)
  *   PROSPECT_FOLLOWUP_DAYS         its due offset, default 5
  */
 
@@ -70,7 +62,7 @@ import { interpretInit, interpretReply, interpretCustomerAsk } from "./schedule-
 import { freeBusy, computeSlots, slotStillFree, createEvent, calendarConfigured, CALENDAR_SECRET } from "./google-cal.mjs";
 import { parseScheduleFact } from "./slots.mjs";
 import { sendEmail } from "../shared/resend.mjs";
-import { supportScanCandidates, supportTaskContactId, supportCommentRearm, expiredCasesToSettle, expiredCaseAction, expiredCaseComment } from "./support-scan.mjs";
+import { supportScanCandidates, supportTaskContactId, supportCommentRearm, expiredCasesToSettle, expiredCaseAction, expiredCaseComment, caseTaskIds, caseAfterOutreach } from "./support-scan.mjs";
 import { steeringComments, normalizeComments, latestCursor, renderComments } from "../shared/task-comments.mjs";
 import { loadLocalState, saveLocalState, peekState } from "../shared/state-local.mjs";
 import { commanderAuthVerdict } from "./commander-auth.mjs";
@@ -88,6 +80,7 @@ import {
 const { hasOfferedThread, handleReengageReply } = await loadLane("reengage-reply", { hasOfferedThread: () => false });
 const { hasBriefThread, handleBriefReply } = await loadLane("brief-reply", { hasBriefThread: () => false });
 const { hasGrantInfoThread, handleGrantReply } = await loadLane("grant-reply", { hasGrantInfoThread: () => false });
+const { hasPartnerInfoThread, handlePartnerReply } = await loadLane("partner-reply", { hasPartnerInfoThread: () => false });
 const { hasCourseThread, handleCourseReply, maybeCourseStartAsk, isCourseStartAsk } = await loadLane("course-reply",
   { hasCourseThread: () => false, maybeCourseStartAsk: async () => ({ handled: false }), isCourseStartAsk: async () => false });
 // Which addresses sign in to NOAN (our app DB). Absent in the pack: null = unknown, so the
@@ -100,6 +93,7 @@ import { respondLine } from "../shared/respond-by.mjs";
 import { requireEnv, envList, envAddress, agentName as defaultAgentName, agentIdentityId, allowedLinks, pronouns } from "../shared/required-env.mjs";
 import { USER_TAGS, isUserContact } from "./trigger-tags.mjs";
 import { stripHtml } from "./html-text.mjs";
+import { wakeGeneralWorker } from "./general-wake.mjs";
 
 const AGENT_NAME     = defaultAgentName();
 const TEST_RECIPIENT = process.env.TEST_RECIPIENT || null;
@@ -143,7 +137,7 @@ function required(name) {
 }
 // Either NOAN key satisfies this. noan.mjs prefers the per-category key and refuses to run
 // with neither, so naming the shared key here would reject a correctly configured
-// per-category run — and it is why the shared key had to stay in every workflow env block.
+// per-category run.
 assertNoanKey();
 // Either model-key name satisfies this; see assertModelKey.
 assertModelKey();
@@ -300,8 +294,8 @@ function headerValue(full, name) {
 /* From: is forgeable; both commander gates below require proof the mail was
  * DKIM-signed by the teammate domain and DMARC-aligned, as stamped by the receiving
  * MTA (Resend/SES) — commanderAuthVerdict() in commander-auth.mjs, which also
- * owns the Resend header encoding. Until 2026-09-10 this was two loose regexes
- * over the joined header that an attacker's own DKIM pass satisfied. */
+ * owns the Resend header encoding. Never replace it with a loose regex over the
+ * joined header: an attacker's own DKIM pass satisfies that. */
 
 /* EXECUTABLE (what can actually run), buildTaskTitle and the task-shaping
  * logic live in command-queue.mjs — the pure, testable half. The registry
@@ -378,13 +372,16 @@ async function executeQueueTask({ verdict, senderEmail, byEmail, state, inboundI
   // assignment is the trigger now, so assigning here would fire the agent early.
   // todo is a human's to-do and stays unassigned too. general MUST be assigned:
   // "assigned + untagged" is the general worker's whole trigger.
+  let assigned = false;
   if (AGENT_IDENTITY_ID && plan.assign) {
-    try { await noanPut(`/tasks/${taskId}/assignees`, { assigneeIds: [AGENT_IDENTITY_ID] }); }
+    try { await noanPut(`/tasks/${taskId}/assignees`, { assigneeIds: [AGENT_IDENTITY_ID] }); assigned = true; }
     catch (e) { log(`  warn: assign failed: ${e.message}`); }
   }
   if (plan.contactId) {
     try { await noanPut(`/tasks/${taskId}/contacts`, { contactIds: [plan.contactId] }); } catch {}
   }
+  // Assigned and untagged is a general task: wake its worker now, not at its cron.
+  if (assigned && !plan.tags.length) await wakeGeneralWorker(taskId, { log });
 
   if (plan.pending) {
     state.pending = state.pending || {};
@@ -417,8 +414,7 @@ async function executeConfirmPending({ verdict, senderEmail, state }) {
 /** `sourceTask`: the escalation is ABOUT an existing board task (a support
  *  outreach task that could not be worked). The email still goes out, but no
  *  second "[reply-needs-human]" task is filed — the caller has parked the
- *  source task itself, and that is the one a human works. Two tasks for one
- *  problem was what the pre-2026-09-10 no-contact path produced. */
+ *  source task itself, and that is the one a human works. */
 async function escalate({ inbound, body, contact, reason, sourceTask = null }) {
   const senderEmail = bareEmail(inbound.from) || "(unknown)";
   const to = TEST_RECIPIENT || ESCALATE_TO;
@@ -455,8 +451,7 @@ async function escalate({ inbound, body, contact, reason, sourceTask = null }) {
       externalId: `reply-escalate:${inbound.id}`,
     });
     const taskId = created?.task?.id || created?.id;
-    // parked to the CS owner (REPLY_HUMAN_ASSIGNEES), the same person the email above
-    // went to — until 2026-09-10 this task was tagged and left unassigned
+    // parked to the CS owner (REPLY_HUMAN_ASSIGNEES), the same person the email above went to
     if (taskId) await parkForHuman({ id: taskId, tags: [], assignees: [] }, { lane: "cs", agent: "reply", assignees: HUMAN_ASSIGNEES, reason, status: null, log });
     if (taskId && contact) {
       try { await noanPut(`/tasks/${taskId}/contacts`, { contactIds: [contact.id] }); } catch {}
@@ -567,8 +562,8 @@ async function handleScheduleInit({ meta, body, senderEmail, externals, init, st
     offeredStarts: slots.map(s => s.startISO), rounds: 0,
     at: new Date().toISOString(),
   };
-  // confirm to the requester — a silent success is indistinguishable from a
-  // no-fire from their inbox (2026-08-04, the Cassidy/Volition thread)
+  // confirm to the requester: a silent success is indistinguishable from a
+  // no-fire from their inbox
   await notifyRequester({
     requestedBy: senderEmail,
     subject: `[${AGENT_NAME}] offered ${firstName} ${slots.length} slot(s)${init.topic ? ` — ${init.topic}` : ""}`,
@@ -583,7 +578,7 @@ async function handleScheduleInit({ meta, body, senderEmail, externals, init, st
 }
 
 /**
- * Customer-initiated scheduling (2026-07-25): a customer mid-thread with
+ * Customer-initiated scheduling: a customer mid-thread with
  * the agent asks for time with a teammate → offer slots from THAT teammate's
  * calendar and enter the standard offered-thread machinery (their reply then
  * books via handleScheduleReply exactly like teammate-initiated threads).
@@ -976,8 +971,7 @@ async function handleSupportTurn({ meta, body, senderEmail, contact, state, mark
   }
 
   // The support agent has no tool that enrolls, signs up, upgrades or refunds anyone, so a draft
-  // saying it did is always false. On 2026-10-02 one told a customer "signed you up" for the
-  // email course with nothing set up (sender-registration.mjs claimsAccountAction).
+  // saying it did is always false (sender-registration.mjs claimsAccountAction).
   if (claimsAccountAction(verdict.reply_text) || claimsAccountAction(stripHtml(verdict.reply_html || ""))) {
     await escalate({ inbound: meta, body, contact, reason: `Support draft claims an enrollment or account change, which ${AGENT_NAME} cannot make. A human should reply. Draft: ${(verdict.reply_text || "").slice(0, 400)}` });
     if (kase) kase.status = "escalated";
@@ -987,7 +981,7 @@ async function handleSupportTurn({ meta, body, senderEmail, contact, state, mark
   }
 
   // a simple non-issue question answered in one turn: send + memo, but no case,
-  // no brief, no tasks — the lightweight Q&A behavior customers had before
+  // no brief, no tasks: the lightweight Q&A path
   const quickAnswer = !kase && !verdict.is_issue && verdict.action === "resolve";
 
   if (!kase && !quickAnswer) {
@@ -1067,7 +1061,7 @@ const FOLLOWUP_REPLY_DAYS = parseInt(process.env.FOLLOWUP_REPLY_WINDOW_DAYS || "
 /** ISO date of a follow-up sent to this contact inside the window, else null.
  *
  *  HYDRATES the contact. The contact in hand comes from GET /contacts, and that
- *  endpoint does NOT return notes — verified 2026-08-11: `notes` is absent from
+ *  endpoint does NOT return notes: `notes` is absent from
  *  list items and present only on GET /contacts/{id}. A version reading
  *  contact.notes directly would look correct, pass review, and never once fire.
  *
@@ -1131,11 +1125,11 @@ async function handleFollowupReply({ meta, body, senderEmail, contact, sentOn, m
       try { await addTaskTags({ id: taskId, tags: [] }, "Sales"); }
       catch (e) { log(`  warn: could not tag the Sales task: ${e.message}`); }
       // "a human should" needs to name one. A warm hand-raise is inbound
-      // sales, so the sales lane's owner (decided 2026-09-11).
+      // sales, so the sales lane's owner.
       // `keep` from the CREATE RESPONSE, not a re-read: PUT /assignees replaces
       // the whole set, and externalId carries no uniqueness guarantee, so if a
       // create ever answers with an existing row this stops us wiping whoever
-      // was already on it. Free - the object is already in hand (PR review).
+      // was already on it. Free: the object is already in hand.
       await assignResolvedOwner(taskId, { lane: "sales", agent: "reply-followup", keep: (created?.task?.assignees || created?.assignees || []).map(a => a?.id).filter(Boolean), log });
       try { await noanPut(`/tasks/${taskId}/contacts`, { contactIds: [contact.id] }); }
       catch (e) { log(`  warn: could not link the contact: ${e.message}`); }
@@ -1156,12 +1150,11 @@ async function handleFollowupReply({ meta, body, senderEmail, contact, sentOn, m
 /* ---------------- task-triggered support outreach ---------------- */
 
 const SUPPORT_TRIGGER_TAG = process.env.SUPPORT_TRIGGER_TAG || "support";
-const DETAILS_CAP = 2048;   // hard API cap on task details — rejected, not truncated, above it
 const LEGACY_MARKER_RX = /^\s*(\[[a-z-]+\]\s*)+/i;
 
 /** Backlog tasks tagged "support" AND assigned to the agent → it opens the
- *  conversation with the task's contact. (Tag + assignee trigger since
- *  2026-07-24 — the [support] title marker is retired.) */
+ *  conversation with the task's contact. The trigger is the tag plus the
+ *  assignee; a "[support]" title marker alone never triggers. */
 async function scanSupportTasks(getContacts, state) {
   const brain = await loadCsBrain();
   if (!brain) return;
@@ -1171,7 +1164,7 @@ async function scanSupportTasks(getContacts, state) {
 
   const backlog = await noanGetAll(`/tasks?status=backlog&per_page=100`);
 
-  // Comments as the hand-back (support-scan.mjs, 2026-09-10): a teammate
+  // Comments as the hand-back (support-scan.mjs): a teammate
   // comment addressing the agent on a support task it is NOT on clears
   // needs-human, assigns it, and steers the draft. Cursor per task; a
   // baseline stamped on the first run so old comments never re-arm.
@@ -1205,15 +1198,12 @@ async function scanSupportTasks(getContacts, state) {
   // A task that could not be worked is PARKED (needs-human, the agent off, the CS
   // owner on via REPLY_HUMAN_ASSIGNEES) with the reason on the task, and the owner is
   // emailed. Nothing goes in the ledger: unassigned does not trigger, so
-  // re-assigning the agent after the fix is the retry (since 2026-09-10).
-  // The note goes into `details`: POST /tasks/{id}/notes does not exist (404,
-  // verified 2026-09-10) and a catch around it hides that. PATCH replaces the
-  // whole field, so append to the text in hand and trim the tail to the cap.
+  // re-assigning the agent after the fix is the retry.
+  // The reason is a marked comment, so details (which escalate quotes as the
+  // body) keeps the request untrimmed.
   const park = async (task, reason, contact) => {
-    const entry = `\n\n[${AGENT_NAME}] Parked: ${reason} Then re-assign me to the task and I will open the conversation.`;
-    let details = task.details || "";
-    if (details.length + entry.length > DETAILS_CAP) details = details.slice(0, DETAILS_CAP - entry.length - 1).replace(/\s+\S*$/, "") + "…";
-    try { await noanPatch(`/tasks/${task.id}`, { details: details + entry }); }
+    if (DRY_RUN) { log(`  dry-run: would park ${task.id}: ${reason}`); return; }
+    try { await postTaskComment(task.id, `Parked: ${reason} Then re-assign me to the task and I will open the conversation.`); }
     catch (e) { log(`  warn: park note failed: ${e.message}`); }
     await parkForHuman(task, { lane: "cs", agent: "reply", assignees: HUMAN_ASSIGNEES, reason, status: null, log });
     await escalate({
@@ -1226,7 +1216,7 @@ async function scanSupportTasks(getContacts, state) {
     log(`support task ${task.id} — "${task.title}"`);
 
     // re-assigned after a park: drop needs-human, the task is being worked again
-    try { if (await unparkTask(task)) log(`  unparked (needs-human cleared)`); }
+    if (!DRY_RUN) try { if (await unparkTask(task)) log(`  unparked (needs-human cleared)`); }
     catch (e) { log(`  warn: could not clear needs-human: ${e.message}`); }
 
     const contactId = supportTaskContactId(task);
@@ -1237,10 +1227,8 @@ async function scanSupportTasks(getContacts, state) {
         : `couldn't resolve the contact — link exactly one contact to the task, or put a 'Contact ID: <uuid>' line in the details.`, null);
       continue;
     }
-    if (state.cases?.[contact.email.toLowerCase()]?.status === "open") {
-      log(`  ${contact.email} already has an open case — leaving task for next runs`);
-      continue;
-    }
+    // An open case does not hold this task back: it joins the case (support-scan.mjs).
+    if (state.cases?.[contact.email.toLowerCase()]?.status === "open") log(`  ${contact.email} has an open case — this outreach joins it`);
 
     let verdict;
     try {
@@ -1257,12 +1245,9 @@ async function scanSupportTasks(getContacts, state) {
       continue;
     }
     // "reply" opens a case and awaits them; "resolve" is a complete answer with
-    // nothing to await (an FDA escalation whose gap a person has since closed,
-    // 2026-10-08: the agent answered the customer in one message, returned resolve, and
-    // this branch parked it with the answer's own summary as the "reason").
+    // nothing to await (e.g. an FDA escalation whose gap a person has since closed).
     // Either sends. Anything else is parked, and the park says WHICH verdict
-    // it was: a human reading "fix the task details" for an escalate verdict
-    // went looking for a broken contact that was fine.
+    // it was, so a human does not go looking for a broken contact on an escalate.
     const sendable = (verdict.action === "reply" || verdict.action === "resolve") && !!verdict.reply_html;
     if (!sendable) {
       const why = verdict.reason || verdict.issue_summary || "no draft";
@@ -1277,6 +1262,11 @@ async function scanSupportTasks(getContacts, state) {
       continue;
     }
     const resolved = verdict.action === "resolve";
+    if (DRY_RUN) {
+      const joins = state.cases?.[contact.email.toLowerCase()]?.status === "open";
+      log(`  dry-run: would send the ${verdict.action} outreach to ${contact.email}${joins ? ", joining its open case" : ""} — "${(verdict.subject || task.title).slice(0, 80)}"`);
+      continue;
+    }
 
     // claim the task, send the outreach, open the case
     if (!resolved) { try { await noanPatch(`/tasks/${task.id}`, { status: "in-progress" }); } catch {} }
@@ -1291,13 +1281,12 @@ async function scanSupportTasks(getContacts, state) {
 
     const now = new Date().toISOString();
     state.cases = state.cases || {};
-    // A resolved answer leaves no OPEN case: an open case blocks every later
-    // support task for this contact until it expires (CASE_EXPIRY_DAYS).
-    state.cases[contact.email.toLowerCase()] = {
-      id: `task:${task.id}`, taskId: task.id, status: resolved ? "resolved" : "open",
-      openedAt: now, openedBy: "task", ...(resolved ? { closedAt: now } : {}),
-      subject, turns: [{ at: now, who: AGENT_NAME.toLowerCase(), summary: (verdict.reply_text || "").slice(0, 280) }],
-    };
+    // A new case, or this task joined to the contact's open one. A resolved
+    // answer never opens a case, and never closes someone else's open one.
+    const { kase, joined } = caseAfterOutreach(state.cases[contact.email.toLowerCase()], {
+      taskId: task.id, subject, resolved, now, who: AGENT_NAME.toLowerCase(), summary: (verdict.reply_text || "").slice(0, 280),
+    });
+    state.cases[contact.email.toLowerCase()] = kase;
     try {
       await addContactMemo(contact.id, `[${AGENT_NAME}] Support ${resolved ? "answer" : "outreach"} (from task) — ${now.slice(0, 10)}\nTask: ${task.title}\n${AGENT_NAME}: ${(verdict.reply_text || "").slice(0, 600)}`);
     } catch {}
@@ -1309,7 +1298,7 @@ async function scanSupportTasks(getContacts, state) {
       catch (e) { log(`  warn: could not close ${task.id}: ${e.message}`); }
       log(`  ✓ answer sent to ${TEST_RECIPIENT || contact.email}, task done (resolve verdict)`);
     } else {
-      log(`  ✓ outreach sent to ${TEST_RECIPIENT || contact.email}, case open, task in-progress`);
+      log(`  ✓ outreach sent to ${TEST_RECIPIENT || contact.email}, ${joined ? `joined open case ${kase.id}` : "case open"}, task in-progress`);
     }
   }
 }
@@ -1324,36 +1313,45 @@ async function settleExpiredCaseTasks(state) {
   try { board = new Map((await noanGetAll(`/tasks?per_page=100`)).map(t => [t.id, t])); }
   catch (e) { log(`  warn: expired-case sweep could not read the board: ${e.message}`); return; }
   for (const [email, kase] of pending) {
-    const task = board.get(kase.taskId);
-    const action = expiredCaseAction(kase, task);
-    if (action === "retry") { kase.settleMisses = (kase.settleMisses || 0) + 1; log(`  expired case ${email}: task ${kase.taskId} not on the board read, retrying next poll`); continue; }
-    if (action === "give-up") { kase.taskSettled = "missing"; log(`  expired case ${email}: task ${kase.taskId} not found ${kase.settleMisses + 1} times, giving up`); continue; }
+    // a case carries one task per outreach that joined it (support-scan.mjs caseTaskIds);
+    // the miss counter only runs when NONE of them is on the board read
+    const found = caseTaskIds(kase).map(id => board.get(id)).filter(Boolean);
+    const action = found.length ? (found.every(t => expiredCaseAction(kase, t) === "settled") ? "settled" : "park") : expiredCaseAction(kase, undefined);
+    if (action === "retry") { kase.settleMisses = (kase.settleMisses || 0) + 1; log(`  expired case ${email}: task(s) ${caseTaskIds(kase).join(", ")} not on the board read, retrying next poll`); continue; }
+    if (action === "give-up") { kase.taskSettled = "missing"; log(`  expired case ${email}: task(s) ${caseTaskIds(kase).join(", ")} not found ${kase.settleMisses + 1} times, giving up`); continue; }
     if (action === "settled") { kase.taskSettled = "already-closed"; continue; }
-    log(`  expired case ${email}: no reply since ${String(kase.openedAt).slice(0, 10)}, parking task ${kase.taskId}`);
-    if (DRY_RUN) { log(`  dry-run: would comment and park ${kase.taskId}`); continue; }
-    try { await postTaskComment(kase.taskId, expiredCaseComment(kase, { agentName: AGENT_NAME, expiryDays: CASE_EXPIRY_DAYS })); }
-    catch (e) { log(`  warn: expired-case comment failed on ${kase.taskId}: ${e.message}`); }
-    await parkForHuman(task, { lane: "cs", agent: "reply", assignees: HUMAN_ASSIGNEES, reason: "support case expired with no reply", log });
-    kase.taskSettled = "parked";
+    for (const task of found) {
+      if (expiredCaseAction(kase, task) !== "park") continue;
+      log(`  expired case ${email}: no reply since ${String(kase.openedAt).slice(0, 10)}, parking task ${task.id}`);
+      if (DRY_RUN) { log(`  dry-run: would comment and park ${task.id}`); continue; }
+      try { await postTaskComment(task.id, expiredCaseComment(kase, { agentName: AGENT_NAME, expiryDays: CASE_EXPIRY_DAYS })); }
+      catch (e) { log(`  warn: expired-case comment failed on ${task.id}: ${e.message}`); }
+      await parkForHuman(task, { lane: "cs", agent: "reply", assignees: HUMAN_ASSIGNEES, reason: "support case expired with no reply", log });
+    }
+    if (!DRY_RUN) kase.taskSettled = "parked";
   }
   await saveState(state);
 }
 
 /** When a task-initiated case closes, close its task too. */
 async function closeCaseTask(kase, resolved) {
-  if (!kase?.taskId) return;
-  try {
-    if (resolved) {
-      await noanPatch(`/tasks/${kase.taskId}`, { status: "done", completed: true });
-    } else {
-      // fetch the live task so tag/assignee merges preserve what's there
-      const all = await noanGetAll(`/tasks?per_page=100`);
-      const task = all.find(t => t.id === kase.taskId) || { id: kase.taskId, tags: [], assignees: [] };
-      // park: tagged-but-unassigned won't retrigger; re-assign the agent to retry.
-      // The CS owner goes on it (REPLY_HUMAN_ASSIGNEES) so the case has an owner.
-      await parkForHuman(task, { lane: "cs", agent: "reply", assignees: HUMAN_ASSIGNEES, reason: "support case closed unresolved", log });
-    }
-  } catch (e) { log(`  warn: could not update source task: ${e.message}`); }
+  const ids = caseTaskIds(kase);   // the opener plus every task that joined (support-scan.mjs)
+  if (!ids.length) return;
+  let all = null;
+  for (const taskId of ids) {
+    try {
+      if (resolved) {
+        await noanPatch(`/tasks/${taskId}`, { status: "done", completed: true });
+      } else {
+        // fetch the live task so tag/assignee merges preserve what's there
+        all = all || await noanGetAll(`/tasks?per_page=100`);
+        const task = all.find(t => t.id === taskId) || { id: taskId, tags: [], assignees: [] };
+        // park: tagged-but-unassigned won't retrigger; re-assign the agent to retry.
+        // The CS owner goes on it (REPLY_HUMAN_ASSIGNEES) so the case has an owner.
+        await parkForHuman(task, { lane: "cs", agent: "reply", assignees: HUMAN_ASSIGNEES, reason: "support case closed unresolved", log });
+      }
+    } catch (e) { log(`  warn: could not update source task ${taskId}: ${e.message}`); }
+  }
 }
 
 /* ---------------- command handling ---------------- */
@@ -1629,9 +1627,9 @@ async function main() {
             await saveState(state); continue;
           }
           if (init?.is_scheduling && !calendarConfigured()) {
-            // No calendar to read. Until 2026-10-03 freeBusy threw here, the run left the
-            // email "unprocessed for next run", and every later run retried it while the
-            // teammate heard nothing. Tell them once and mark it handled.
+            // No calendar to read: tell the teammate once and mark it handled. Never
+            // leave the email unprocessed, or every later run retries it while the
+            // teammate hears nothing.
             await notifyRequester({
               requestedBy: senderEmail,
               subject: `[${AGENT_NAME}] scheduling isn't set up yet`,
@@ -1651,12 +1649,10 @@ async function main() {
         await saveState(state); continue;
       }
 
-      // Sender not in the network? Until 2026-09-09 that escalated on its own:
-      // Ryan O'Connor at SeedGrowth asked a product question the facts answer
-      // and waited five hours for a human to approve the reply. Now the contact
-      // is created from the email and routing continues — every guard below
-      // (money, complaints, ungrounded answers, the per-sender cap) still
-      // escalates exactly as it did for a known non-Subscriber.
+      // Sender not in the network: the contact is created from the email and
+      // routing continues. Every guard below (money, complaints, ungrounded
+      // answers, the per-sender cap) still escalates exactly as it does for a
+      // known non-Subscriber.
       //
       // Duplicate guard, two layers. `byEmail` is this run's snapshot, so a
       // second mail from the same new sender in the same run reuses the record
@@ -1671,8 +1667,8 @@ async function main() {
 
       // Probably a subscriber writing from a second address (sender-registration.mjs): same full
       // name as a Free/Subscriber contact on another address. Whether this address can sign in
-      // does not change it: on 2026-10-02 the second address was itself a login (a member seat in
-      // someone else's workspace) while the subscription sat on the first. Create NO contact (one person must not count as two accounts) and ask them to
+      // does not change it: the second address can itself be a login (a member seat in
+      // someone else's workspace) while the subscription sits on the first. Create NO contact (one person must not count as two accounts) and ask them to
       // write from the address they signed up with. Never name that address: they have not
       // proven who they are. A second email inside REDIRECT_WINDOW_DAYS means they want to use
       // this one, which is a human's call, not a second identical reply.
@@ -1756,13 +1752,24 @@ async function main() {
         }
       }
 
+      // The same for the partner verification agent's request for more information.
+      if (hasPartnerInfoThread(senderEmail)) {
+        const r = await handlePartnerReply({ meta, body, senderEmail, contact, mark, log });
+        if (r.handled) { await saveState(state); continue; }
+        if (r.escalate) {
+          await escalate({ inbound: meta, body, contact, reason: r.escalate });
+          mark("partner-reply-failed", { reason: String(r.escalate).slice(0, 200) });
+          await saveState(state); continue;
+        }
+      }
+
       // open bespoke-deck offer from the re-engagement agent? a clear YES
       // builds and sends the deck; anything else falls through to normal routing
       if (hasOfferedThread(senderEmail)) {
         const r = await handleReengageReply({ meta, body, senderEmail, contact, mark });
         if (r.handled) { await saveState(state); continue; }
         if (r.escalate) {
-          await escalate({ inbound: meta, body, contact, reason: r.escalate });
+          await escalate({ inbound: meta, body, contact, reason: r.escalate, sourceTask: r.sourceTask || null });
           mark("reengage-deck-failed", { reason: String(r.escalate).slice(0, 200) });
           await saveState(state); continue;
         }
@@ -1771,13 +1778,13 @@ async function main() {
 
       // Reply to a SALES FOLLOW-UP. Must run before the customer-success path,
       // which otherwise treats it as a support question and sends a grounded
-      // answer — so a prospect writing "yes, let's talk" got a help-desk reply
-      // and no Sales task, and nothing recorded that they had raised a hand.
+      // answer, so a prospect writing "yes, let's talk" would get a help-desk
+      // reply and no Sales task.
       //
       // Detected from the contact memo the follow-up agent writes on send,
       // matched on that exact literal prefix. Deliberately not a keyword search
       // on the body: intent classification here would be a model call on every
-      // inbound, and a loose match is what broke the demo-video cooldown.
+      // inbound, and a loose match misfires.
       //
       // Never auto-answers. A human gets the reply and a Sales task; judging
       // what a buying signal deserves is not this agent's call.
@@ -1803,7 +1810,7 @@ async function main() {
       }
 
       // …and a Subscriber with NO course thread can simply ASK to start one
-      // (added 2026-08-06): keyword prefilter + conservative classifier, then
+      // keyword prefilter + conservative classifier, then
       // the agent asks their goals + starting area; the answer builds the course.
       if (COURSE_ON && !hasCourseThread(senderEmail) && isUserContact(contact)) {
         const r = await maybeCourseStartAsk({ meta, body, senderEmail, contact, mark });
@@ -1817,8 +1824,8 @@ async function main() {
       }
 
       // …while a course request from an address with NO Free/Subscriber record is told the
-      // course runs on the address they signed up with. Before this it fell through to the
-      // support reply, which on 2026-10-02 answered "signed you up" with nothing set up.
+      // course runs on the address they signed up with. Otherwise it falls through to the
+      // support reply, which can claim a sign-up that never happened.
       // A failed classify answers false, so this can only ever divert a clear course ask.
       if (COURSE_ON && !hasCourseThread(senderEmail) && !isUserContact(contact) &&
           (await isCourseStartAsk({ body, contact }))) {
@@ -1864,8 +1871,7 @@ async function main() {
         // fallthrough: not an implementation ask — normal routing continues
       }
 
-      // customer asking to set up time with a teammate? (2026-07-25 — a customer's
-      // ask got escalated instead of scheduled) Keyword pre-filter, then a
+      // customer asking to set up time with a teammate? Keyword pre-filter, then a
       // conservative classifier; on a clear ask, offer slots from the named
       // teammate's calendar (default owner) and enter the offered-thread flow.
       // With no calendar connected there are no slots to offer: skip the classifier and let

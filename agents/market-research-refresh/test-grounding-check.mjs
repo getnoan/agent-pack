@@ -7,11 +7,12 @@ let pass = 0, fail = 0;
 const ok = (n, c, d = "") => { if (c) { pass++; console.log(`  ok   ${n}`); } else { fail++; console.log(`  FAIL ${n}${d ? ` — ${d}` : ""}`); } };
 console.log("grounding check");
 
-// 1. market research: the table IS the worker's two default lists (parsed from source, so a change there fails here)
+// 1. market research: the table IS the worker's default lists (parsed from source, so a change there fails here).
+// Category Dynamics' list reuses slugs from the other two, so compare as sets.
 const src = readFileSync(new URL("./market-research-refresh-worker.mjs", import.meta.url), "utf8");
 // slugs only: the company-context list ends in a spread that splits an env var on ","
 const list = (name) => [...(src.match(new RegExp(`const ${name} = \\[([\\s\\S]*?)\\];`))?.[1] || "").matchAll(/"([^"]+)"/g)].map(m => m[1]).filter(x => /^[A-Za-z]/.test(x));
-const workerSlugs = [...list("DEFAULT_COMPANY_CONTEXT_GROUNDING"), ...list("DEFAULT_ICP_GROUNDING")];
+const workerSlugs = [...new Set([...list("DEFAULT_COMPANY_CONTEXT_GROUNDING"), ...list("DEFAULT_ICP_GROUNDING"), ...list("DEFAULT_CATEGORY_DYNAMICS_GROUNDING")])];
 ok("market research slugs equal the worker's default grounding lists",
    workerSlugs.length >= 12 && JSON.stringify([...workerSlugs].sort()) === JSON.stringify([...GROUNDING["market research"].slugs].sort()),
    `worker=${workerSlugs.length} table=${GROUNDING["market research"].slugs.length}`);

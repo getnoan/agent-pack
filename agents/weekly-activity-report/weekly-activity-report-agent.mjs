@@ -59,10 +59,9 @@ const clip = s => (s.length > HEADLINE_MAX ? `${s.slice(0, HEADLINE_MAX - 1).tri
  * One scannable line for a standalone note: its title, else the first sentence of
  * its body.
  *
- * WHY NOT THE OLD 150-CHARACTER SLICE. Notes Captured used to reproduce a blind
- * 150-char cut of every note, which lands mid-word and mid-thought, and the section
- * was the report's last remaining unbounded axis after the Tasks enumeration was
- * removed on 2026-09-02 for blowing the NOAN 25,000-char POST /notes cap.
+ * One bounded line per note keeps Notes Captured from growing without limit
+ * against the NOAN 25,000-char POST /notes cap. Do not go back to a blind
+ * character slice of the body: it cuts mid-word.
  *
  * The abbreviation case ("Dr. Smith called") would otherwise cut at "Dr." and render
  * as a two-character headline, so a suspiciously short first sentence falls back to
@@ -159,19 +158,14 @@ export async function runWeeklyActivityReportAgent({ windowLabel, isFirstRun, ba
  * real markdown table — both firm Playbook rules, enforced here rather than left to
  * the model's phrasing.
  *
- * NOTES CAPTURED IS STANDALONE NOTES ONLY, and one headline per note. It used to
- * carry contact-memo deltas as well — every new memo quoted to 150 characters, so a
- * single contact with five new memos emitted ~750 characters on one line, unbounded in
- * contacts × memos. Memos are still gathered and still feed theme synthesis, but they
- * are not reproduced here: they already live on the contact record, which is the
- * durable place to read them. Their delta count and every caveat about them (a failed
- * read, a replaced history, a seeding run) surface under Data Notes.
+ * NOTES CAPTURED IS STANDALONE NOTES ONLY, and one headline per note. Contact
+ * memos feed theme synthesis but are not quoted here: quoting them is unbounded in
+ * contacts x memos. Their delta count and every caveat about them (a failed read, a
+ * replaced history, a seeding run) go under Data Notes.
  *
- * There is deliberately no Tasks section: the raw completed/opened enumeration was a
- * long list nobody read, and it was also the bulk of the note body — 355 completed
- * tasks on 2026-09-02 pushed the report past the NOAN 25,000-char POST /notes cap and
- * failed the run outright. Tasks still reach the model via buildUserPrompt, so they
- * shape the themes; they are just no longer dumped verbatim into the output.
+ * There is deliberately no Tasks section: enumerating every completed/opened task
+ * can push the report past the NOAN 25,000-char POST /notes cap and fail the run.
+ * Tasks still reach the model via buildUserPrompt, so they shape the themes.
  */
 export function renderReport({ windowLabel, windowStartDate, windowEndDate, isFirstRun, baselineSeeded = false, result, factUpdates, assetsCreated, standaloneNotes, dataNotes }) {
   const parts = [

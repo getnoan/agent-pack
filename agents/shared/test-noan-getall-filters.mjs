@@ -2,13 +2,10 @@
 /**
  * noanGetAll keeps the query filter on every page.
  *
- * The API's `links.next` drops every query param: measured 2026-09-11,
- * `GET /tasks?completed=false&per_page=100` reports totalItems 120 and a next
- * link of `…/tasks?page=2&per_page=100`. sweepOnce used to follow that link, so
- * a filtered list over one page silently became the whole board from page two
- * (1215 rows, 1095 completed, for 120 open). ~32 call sites pass a filtered
- * /tasks path; `status=backlog` was one page short of the general lane
- * claiming tasks from every status.
+ * The API's `links.next` drops every query param: `GET /tasks?completed=false`
+ * gets a next link of `…/tasks?page=2&per_page=100`. Following it turns a
+ * filtered list over one page into the whole board from page two, so sweepOnce
+ * rebuilds each page URL from the filtered path instead.
  *
  * The API is faked at the fetch layer (the way test-bootstrap.mjs does it), so
  * this exercises the real call() → sweepOnce → union path.

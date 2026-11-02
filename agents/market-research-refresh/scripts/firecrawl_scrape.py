@@ -6,8 +6,9 @@ specific URL to check (e.g. a named competitor's pricing page) rather than needi
 first. Same division of labor: this owns the API mechanics, the Agent Config fact decides
 which URLs matter and what to make of their content.
 
-Usage: python3 firecrawl_scrape.py "<url>"
-Reads FIRECRAWL_API_KEY from the environment. Prints one JSON object to stdout: the url,
+Usage: python3 firecrawl_scrape.py "<url>" [--max-chars N]
+--max-chars raises the markdown cap for a caller that needs the whole page (the
+Verified issue agent checks a quote anywhere in a report, often a long PDF). Reads FIRECRAWL_API_KEY from the environment. Prints one JSON object to stdout: the url,
 when it was accessed, page title, and markdown content (truncated).
 """
 import json
@@ -45,7 +46,7 @@ def _firecrawl_post(path, payload):
     return json.loads(body)
 
 
-def scrape(url):
+def scrape(url, cap=MARKDOWN_CHAR_CAP):
     payload = {"url": url, "formats": ["markdown"], "onlyMainContent": True}
     response = _firecrawl_post("/scrape", payload)
     if not response.get("success", False):
@@ -56,17 +57,24 @@ def scrape(url):
     return {
         "url": url,
         "title": metadata.get("title"),
-        "markdown": markdown[:MARKDOWN_CHAR_CAP],
-        "markdownTruncated": len(markdown) > MARKDOWN_CHAR_CAP,
+        "markdown": markdown[:cap],
+        "markdownTruncated": len(markdown) > cap,
         "accessedAt": datetime.now(timezone.utc).isoformat(),
     }
 
 
 def main():
     if len(sys.argv) < 2:
-        print(json.dumps({"error": "missing_argument", "detail": "usage: firecrawl_scrape.py \"<url>\""}), file=sys.stderr)
+        print(json.dumps({"error": "missing_argument", "detail": "usage: firecrawl_scrape.py \"<url>\" [--max-chars N]"}), file=sys.stderr)
         sys.exit(1)
-    print(json.dumps(scrape(sys.argv[1]), indent=2))
+    cap = MARKDOWN_CHAR_CAP
+    if "--max-chars" in sys.argv:
+        i = sys.argv.index("--max-chars") + 1
+        if i >= len(sys.argv) or not sys.argv[i].isdigit():
+            print(json.dumps({"error": "bad_argument", "detail": "--max-chars needs a whole number of characters"}), file=sys.stderr)
+            sys.exit(1)
+        cap = int(sys.argv[i])
+    print(json.dumps(scrape(sys.argv[1], cap), indent=2))
 
 
 if __name__ == "__main__":

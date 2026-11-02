@@ -4,7 +4,7 @@
  * authorisation — the agent's name, its pronouns, the teammate domain, the
  * commanders.
  *
- * Since 2026-09-16 none of those is a default in code, because the code ships
+ * None of those is a default in code, because the code ships
  * in the public agent pack. So a bare `node test-x.mjs` sees "Agent", they/them
  * and no teammate domain, and every assertion written against "Verity" or a
  * getnoan.com commenter fails for the wrong reason. Import this FIRST (ESM

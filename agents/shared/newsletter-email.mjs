@@ -1,39 +1,26 @@
 /**
  * The newsletter's own markdown, and the shell it is sent in.
  *
- * Split out of markdown-email.mjs because the two
- * renderers answer different readers. The report emails are generated
- * markdown read by the team on a white page; an issue is written by a person,
- * or captured by the agent from Slack, and read by customers on the dark ground.
- * Every rule below was bent toward the issues, and the reports must not move
- * when it is.
+ * Kept apart from markdown-email.mjs: the report emails are generated markdown
+ * read by the team on a white page, while an issue is written by a person (or
+ * captured from Slack) and read by customers on the dark ground. Rules here bend
+ * toward the issues, and the reports must not move when they do.
  *
- * WHAT THE ISSUES ACTUALLY LOOK LIKE (the 14 Newsletter-tagged assets, read
- * 2026-09-21). A subheading is written three ways, and the old converter
- * understood one:
- *
- *   `## Heading`            2 older team issues. Rendered, but styled only by
- *                           <style>, which Outlook and Gmail on non-Google
- *                           accounts drop, and at 20px over 17px body text.
- *   `**Heading**` alone     7 issues, the MCP release among them. Came out as
- *                           a bold paragraph.
- *   a bare short line       the latest issue (the Slack capture). JOINED INTO
- *                           THE PARAGRAPH BELOW IT: "Your whole team, wherever
- *                           she is Anyone from your company can use...".
- *
- * All three now become a heading, and every element carries its style INLINE
- * as well as in <style>, from one constant, so no client falls back to its
- * defaults. The bare-line and bold-line promotions are heuristics, so they are
- * reported: parseIssue() returns the lines it promoted and the worker prints
- * them in the dry-run and test summary, before anything goes live.
+ * A subheading is written three ways: `## Heading`, `**Heading**` alone on a
+ * line, or a bare short line above a longer one. All three become a heading.
+ * Every element carries its style INLINE as well as in <style>, from one
+ * constant, because Outlook and Gmail on non-Google accounts drop <style>. The
+ * bare-line and bold-line promotions are heuristics, so parseIssue() returns
+ * the lines it promoted and the worker prints them in the dry-run and test
+ * summary, before anything goes live.
  *
  * BUTTONS. A line that is ONLY `[Words](https://...)` becomes a button saying
- * Words (decided 2026-09-21). A bare URL on its own line stays a link, because
- * there is no honest way to guess the words, and a label over 40 characters
- * stays a link, because a sentence is not a button.
+ * Words. A bare URL on its own line stays a link, because there is no honest
+ * way to guess the words, and a label over 40 characters stays a link, because
+ * a sentence is not a button.
  *
- * Also: `---` is a rule (it printed as "---"), `1.` is an ordered list (the
- * lines ran together), `* ` and `+ ` are bullets, `>` is a pull quote, bare
+ * Also: `---` is a rule, `1.` is an ordered list,
+ * `* ` and `+ ` are bullets, `>` is a pull quote, bare
  * URLs are links, backslash escapes are unescaped, and two trailing spaces are
  * a line break. The plain-text part comes from the same parse (blocksToText),
  * not the raw markdown.
@@ -92,17 +79,15 @@ export const NL_TITLE_FACE = `'Tusker Grotesk','Aktiv Grotesk',Impact,'Helvetica
  *
  * Leading follows the site's fluid scale (its stylesheet), which loosens as
  * size drops: display 48-96px is 1.08, h1 36-60px is 1.1. This title is 40px,
- * so it sits in the h1 band. It was 0.95, the DECK's leading at slide size,
- * which read as cramped over three wrapped lines of caps (decided 2026-09-15).
- * Tracking -0.01em matches the site's .font-display.
+ * so it sits in the h1 band. Tracking -0.01em matches the site's .font-display.
  */
 export const NL_TITLE_TYPE = "font-size:40px;line-height:1.1;letter-spacing:-0.01em;text-transform:uppercase;";
 
 /*
  * Every body element's style, once. Used inline on the element (the copy every
  * client honors) AND as the <style> rule (the copy that wins in a client that
- * strips inline styles it dislikes). The old shell styled headings only in
- * <style>, which is why a subheading could arrive as browser-default type.
+ * strips inline styles it dislikes). Styling only in <style> lets a subheading
+ * arrive as browser-default type.
  *
  * The section head is the display face at 26px: a clear step down from the
  * 40px title and a clear step up from the 17px body. The minor head is the
@@ -156,7 +141,7 @@ export function inlineHtml(text) {
   const linkToken = (html) => { links.push(html); return `\u0000${links.length - 1}\u0000`; };
   let t = escapeHtml(held);
   // [label](url): labels are already escaped; the href is escaped again in
-  // attribute context (the quote was not in the text escape before 2026-09-21).
+  // attribute context, so a quote can never close the href.
   t = t.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+|mailto:[^\s)]+)\)/g, (_, label, url) =>
     linkToken(`<a href="${url.replace(/"/g, "&quot;")}" style="${S.a}">${label}</a>`));
   // Bare URLs, with trailing sentence punctuation left outside the link.
@@ -201,9 +186,9 @@ const RX = {
   // A line that is only emphasis: **Heading**, __Heading__, optionally with
   // the colon inside or outside the markers.
   boldLine: /^(\*\*|__)([^*_].*?)\1\s*:?\s*$/,
-  // [Words](url) and nothing else on the line, optionally after an arrow an
-  // author used to point at it ("→ [Get my stack preview](...)", the Claude
-  // issue). The button draws its own glyph, so the arrow is dropped.
+  // [Words](url) and nothing else on the line, optionally after an arrow
+  // ("→ [Get my stack preview](...)"). The button draws its own glyph, so the
+  // arrow is dropped.
   button: /^(?:→|->|»|▸|&rarr;)?\s*\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)$/,
 };
 export const BUTTON_MAX = 40;
@@ -288,8 +273,7 @@ export function parseIssue(md, { promote = true } = {}) {
     if (kind === "hr") { flushAll(); blocks.push({ type: "hr" }); continue; }
     // A fenced block. The agent's Slack reply hands the picture line back inside a
     // code block so it copies cleanly, and the fences come with it when a person
-    // selects the whole thing (the first issue with a picture, 2026-09-21, showed
-    // "```" above and below it). Fence lines never reach the reader: the lines
+    // selects the whole thing. Fence lines never reach the reader: the lines
     // between them are parsed as if the fences were not there, and an unclosed
     // fence is just dropped.
     if (kind === "fence") { flushPara(); continue; }
@@ -360,10 +344,9 @@ export function parseIssue(md, { promote = true } = {}) {
 /*
  * Where one line of a paragraph meets the next. A soft wrap (the author's
  * editor wrapped a long line) joins with a space; a short line is a line the
- * author ENDED, and keeps its break: a two-line sign-off (a name over a role)
- * ran together onto one line when every newline was a space.
- * Hard-wrapped prose wraps at 70-80 characters, so a line under 60 was ended
- * on purpose. Two trailing spaces are a break whatever the length.
+ * author ENDED, and keeps its break, so a two-line sign-off (a name over a
+ * role) stays on two lines. Hard-wrapped prose wraps at 70-80 characters, so a
+ * line under 60 was ended on purpose. Two trailing spaces are a break whatever the length.
  */
 export const SOFT_WRAP_MIN = 60;
 function joinLines(ls, render, br) {
@@ -493,10 +476,9 @@ export function blocksToText(blocks) {
 /**
  * The Slack capture's provenance line. When the agent captures an issue from
  * Slack it signs the asset "Captured by <agent> from Slack for <@U...> (Name)."
- * That line is for the workspace, not the reader, and the 2026-09 Slack issue
- * would have mailed it to the whole audience (decided 2026-09-21: remove it,
- * and list what was removed in the summary). Matched on its shape, not on
- * the agent's name, so a renamed agent's capture line goes too.
+ * That line is for the workspace, not the reader: remove it and list what was
+ * removed in the summary. Matched on its shape, not on the agent's name, so a
+ * renamed agent's capture line goes too.
  */
 export const CAPTURE_LINE = /^\s*[_*]*\s*captured by .{1,60} from slack\b.*$/i;
 
@@ -519,7 +501,7 @@ export const SLACK_TOKEN = /<[@#!][A-Za-z0-9^|._ -]{1,80}>/g;
  * `title` is the document title and the subject this was sent under.
  * `headline` is the big display line at the top of the body, and it is a
  * DIFFERENT string for an issue: the subject comes from the asset's title and
- * the headline from its description (decided 2026-09-15). Defaults to `title`,
+ * the headline from its description. Defaults to `title`,
  * which is what the internal send report wants.
  *
  * `promote: false` for generated markdown (the send report), whose bold lines

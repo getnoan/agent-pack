@@ -16,15 +16,14 @@ import { noanGet, noanGetAll, searchContacts, companyName } from "../shared/noan
 import { agentName as defaultAgentName, linkRule } from "../shared/required-env.mjs";
 
 import { postMessages } from "../shared/anthropic.mjs";
+import { factsForModel, modelCap } from "./capabilities.mjs";
 
 const MODEL = process.env.CS_MODEL || "claude-opus-5";
-// Claude Opus 5 (2026-09-09): thinking is on by default. Keep it explicit
-// (adaptive, low effort: the cheap setting that still avoids
-// tool-calls-as-text). The refusal fallbacks that used to be set here by hand
-// now come from postMessages, which opts every Opus 5 request in — and which
-// carries the prompt-cache breakpoints this agent never had (caching brief
-// 2026-09-09, P2): system + tools cache across a run, so per-task data must
-// stay in messages, never in the system prompt.
+// Claude Opus 5 has thinking on by default. Keep it explicit (adaptive, low
+// effort: the cheap setting that still avoids tool-calls-as-text). The
+// refusal fallbacks and prompt-cache breakpoints come from postMessages:
+// system + tools cache across a run, so per-task data must stay in messages,
+// never in the system prompt.
 // Adaptive thinking + effort are Opus/Sonnet-tier params (Haiku 400s on
 // them), so an env override to a smaller model sends neither.
 const THINKING = /^claude-(opus|sonnet)/.test(MODEL)
@@ -98,9 +97,9 @@ async function execTool(name, input) {
     case "get_facts": {
       const out = {};
       for (const s of input.block_slugs || []) {
-        const res = await noanGet(`/facts?block_slug=${encodeURIComponent(s)}&per_page=100`);
+        const res = await factsForModel(s);
         out[s] = (res.items || []).map(f =>
-          f.content.length > 40000 ? f.content.slice(0, 40000) + "\n[...fact truncated]" : f.content);
+          f.content.length > modelCap(s, 40000) ? f.content.slice(0, modelCap(s, 40000)) + "\n[...fact truncated]" : f.content);
       }
       return out;
     }

@@ -3,17 +3,12 @@
  * Tests the weekly activity report's Notes Captured section — standalone notes
  * only, one headline per note.
  *
- * WHY THIS FILE EXISTS. The section used to render contact-memo deltas as well,
- * quoting every new memo to 150 characters, which made it unbounded in
- * contacts × memos — the last such axis in the report after the Tasks
- * enumeration was removed on 2026-09-02 for pushing the note body past NOAN's
- * 25,000-character POST /notes cap and failing the scheduled run outright.
- * Memos are still gathered and still feed theme synthesis; they are simply not
- * reproduced here, because they already live on the contact record.
+ * Contact memos feed theme synthesis but are never reproduced here: quoting
+ * them makes the section unbounded in contacts × memos, and a note body past
+ * NOAN's 25,000-character POST /notes cap fails the scheduled run outright.
  *
- * The regression worth guarding is quiet reintroduction: nothing about the
- * report FAILS if a future change starts printing memos here again, it just
- * grows without bound until a busy week trips the cap at 3am. So one test
+ * Nothing about the report FAILS if a change starts printing memos here, it
+ * just grows without bound until a busy week trips the cap. So one test
  * asserts contact names never appear in this section, and the headline tests
  * pin the "one line per note" promise that keeps it bounded.
  *
@@ -78,7 +73,7 @@ const section = (report, name) => (report.split(/\n## /).find(s => s.startsWith(
      section(r, "Notes Captured") === "No standalone notes this week.");
 }
 {
-  // The regression guard. Memos reach the model, never this section.
+  // Memos reach the model, never this section.
   const r = renderReport({
     ...BASE,
     standaloneNotes: [{ inferredSource: "unattributed", title: "Churn review", content: "" }],

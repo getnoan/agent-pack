@@ -2,14 +2,12 @@
 /**
  * A support task that could not be worked must be retryable, not lost.
  *
- * The defect: reply-worker's scanSupportTasks wrote
- * {status:"no-contact"} to its ledger when a task had no resolvable contact,
- * and the scan skipped any ledgered task — so linking the contact afterwards
- * and re-assigning Verity did nothing, forever. Every FDA escalation is filed
- * without a contact until the platform supports it, so this was the common
- * path. Same for a draft that failed its guards ({status:"escalated"}).
+ * reply-worker's scanSupportTasks skips any ledgered task, so a task with no
+ * resolvable contact, or a draft that failed its guards, must not be ledgered:
+ * linking the contact and re-assigning Verity would then do nothing. Every FDA
+ * escalation is filed without a contact, so this is the common path.
  *
- * The fix: those outcomes PARK the task (needs-human, the agent off, a person on)
+ * Those outcomes PARK the task (needs-human, the agent off, a person on)
  * and write nothing to the ledger; unassigned does not trigger, and
  * re-assigning is the retry. Only `sent` blocks a second scan.
  *
@@ -83,12 +81,12 @@ ok("a re-assigned task has needs-human cleared on pickup", /if \(await unparkTas
 ok("escalate() with a sourceTask files no second task", /if \(!sourceTask\) try \{/.test(rw));
 ok("the park note tells the human what to fix and to re-assign", /Parked: \$\{reason\} Then re-assign me/.test(rw));
 
-// 2026-10-08: a complete one-message answer comes back as "resolve" (an FDA
-// escalation whose gap a person had closed); the task path parked it with the
-// answer's own summary as the reason, and the customer never got the email.
+// A complete one-message answer comes back as "resolve" (e.g. an FDA escalation
+// whose gap a person closed). The task path must send it, not park it, or the
+// customer never gets the email.
 ok("a resolve verdict is sendable on the task path", /verdict\.action === "reply" \|\| verdict\.action === "resolve"/.test(rw));
 ok("a resolved answer closes the task as done", /resolved[\s\S]{0,400}status: "done", completed: true/.test(rw));
-ok("a resolved answer leaves no open case for the contact", /status: resolved \? "resolved" : "open"/.test(rw));
+ok("the case record comes from caseAfterOutreach (a resolved answer opens none)", /caseAfterOutreach\(state\.cases\[contact\.email\.toLowerCase\(\)\]/.test(rw));
 ok("a park names the verdict it was", /escalate verdict/.test(rw) && /\$\{verdict\.action\} verdict/.test(rw));
 const csa = readFileSync(new URL("./cs-agent.mjs", import.meta.url), "utf8");
 ok("the outreach prompt allows resolve for a complete one-message answer", /"resolve" when the brief is answered completely/.test(csa));
@@ -142,6 +140,39 @@ ok("the comment says re-assigning does not re-send", /will not send it again/.te
 ok("wiring: the support scan settles expired cases right after pruning", /pruneCases\(state\);\n  await settleExpiredCaseTasks\(state\);/.test(rw));
 ok("wiring: an expired case's task is parked through parkForHuman", /reason: "support case expired with no reply"/.test(rw));
 ok("wiring: dry run parks nothing", /if \(DRY_RUN\) \{ log\(`  dry-run: would comment and park/.test(rw));
+
+console.log("an open case does not block the next task");
+// A "reply" outreach left a case open, and the scan skipped the next support
+// task for the same contact, silently, until a person edited the ledger by
+// hand. The second task now goes out and joins the case.
+const { caseAfterOutreach, caseTaskIds } = await import("./support-scan.mjs");
+const at = (d) => `2026-10-${d}T10:00:00Z`;
+const base = { who: "verity", summary: "answer" };
+let r1 = caseAfterOutreach(undefined, { ...base, taskId: "first", subject: "Q1", resolved: false, now: at(13) });
+ok("no case yet + reply → a new open case on that task", !r1.joined && r1.kase.status === "open" && r1.kase.taskId === "first" && r1.kase.id === "task:first");
+const open1 = r1.kase;
+const r2 = caseAfterOutreach(open1, { ...base, taskId: "second", subject: "Q2", resolved: false, now: at(16) });
+ok("open case + reply → joined, not replaced", r2.joined && r2.kase === open1 && open1.id === "task:first" && open1.openedAt === at(13));
+ok("…the second task rides on the case", JSON.stringify(caseTaskIds(open1)) === JSON.stringify(["first", "second"]));
+ok("…and its turn is appended", open1.turns.length === 2 && open1.turns[1].at === at(16));
+const again2 = caseAfterOutreach(open1, { ...base, taskId: "second", subject: "Q2", resolved: false, now: at(16) });
+ok("joining the same task twice does not duplicate it", caseTaskIds(again2.kase).length === 2);
+const turnsBefore = open1.turns.length;
+const r3 = caseAfterOutreach(open1, { ...base, taskId: "third", subject: "Q3", resolved: true, now: at(17) });
+ok("open case + resolve → joined turns only, the open case stays open", r3.joined && open1.status === "open" && !caseTaskIds(open1).includes("third") && open1.turns.length === turnsBefore + 1);
+const r4 = caseAfterOutreach(undefined, { ...base, taskId: "solo", subject: "Q", resolved: true, now: at(16) });
+ok("no case + resolve → a resolved case, nothing left open", !r4.joined && r4.kase.status === "resolved" && r4.kase.closedAt === at(16));
+const r5 = caseAfterOutreach({ status: "expired", taskId: "old", turns: [] }, { ...base, taskId: "new", subject: "Q", resolved: false, now: at(16) });
+ok("an expired case is not joined: a fresh case replaces it", !r5.joined && r5.kase.taskId === "new");
+const direct = { status: "open", openedBy: "direct", turns: [] };
+caseAfterOutreach(direct, { ...base, taskId: "t9", subject: "Q", resolved: false, now: at(16) });
+ok("a case the customer opened by email carries a joined task too", JSON.stringify(caseTaskIds(direct)) === JSON.stringify(["t9"]));
+ok("an expired direct case with a joined task is swept", expiredCasesToSettle({ "z@x.com": { ...direct, status: "expired" } }).length === 1);
+ok("turns stay capped at 16", (() => { const k = { status: "open", turns: Array.from({ length: 16 }, () => ({})) }; caseAfterOutreach(k, { ...base, taskId: "x", resolved: false, now: at(16) }); return k.turns.length === 16 && k.turns[15].at === at(16); })());
+ok("wiring: the scan no longer skips a contact with an open case", !/already has an open case/.test(rw) && /this outreach joins it/.test(rw));
+ok("wiring: closing a case closes every task it carries", /async function closeCaseTask[\s\S]{0,200}caseTaskIds\(kase\)/.test(rw));
+ok("wiring: a dry run sends no outreach and parks nothing", /if \(DRY_RUN\) \{ log\(`  dry-run: would park/.test(rw) && /dry-run: would send the \$\{verdict\.action\} outreach/.test(rw));
+ok("wiring: an expired case parks every task it carries", /async function settleExpiredCaseTasks[\s\S]{0,800}caseTaskIds\(kase\)/.test(rw));
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

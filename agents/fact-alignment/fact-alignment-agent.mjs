@@ -17,7 +17,9 @@
 
 import { callClaudeJSON } from "../shared/anthropic.mjs";
 import { LABEL_SPECIFIC, LABEL_DECISION, handleFooter } from "../shared/report-handles.mjs";
+import { renderFactSizes, factSizesSummary } from "./fact-size-check.mjs";
 import { NOTE_CONTENT_CAP } from "../shared/noan.mjs";
+import { fieldsDraftRule } from "./space-fields.mjs";
 
 const MODEL = process.env.FACT_ALIGNMENT_MODEL || "claude-opus-5";
 
@@ -82,10 +84,8 @@ const SCHEMA = {
     },
     // Every candidate is still adjudicated explicitly — each ref lands in exactly one of
     // `candidates` or `rejectedCandidates` — but a rejection costs one short line, not a full
-    // entry of nulls. Until 2026-10 a rejection was a full candidates[] entry with
-    // isGenuineFact:false: 93 of them on 2026-09-21, the dominant output term on the run that
-    // died at max_tokens, all discarded unread. The reason given for them ("so the worker can
-    // still close out consumed capture-queue tasks") was stale — closure iterates the board.
+    // entry of nulls. Full entries for rejections dominate the output and can hit max_tokens.
+    // Capture-queue closeout iterates the board, so it does not need them.
     candidates: {
       type: "array",
       description: "GENUINE candidates only: one full entry per capture-queue or notes-scan item you judge to be a real, durable, ready-to-post business fact that isn't already reflected elsewhere in the fact base. Every other item goes in rejectedCandidates instead. An empty array is a valid, expected outcome in a healthy week.",
@@ -145,6 +145,7 @@ function buildSystemPrompt(brain) {
     `- Only flag a contradiction or overlap for materiality — a fact briefly quoted or paraphrased for context isn't automatically an overlap. Don't manufacture findings to fill a quota; empty arrays are a valid, expected outcome in a healthy fact base.`,
     `- Gaps, contradictions, and overlaps are scoped to the in-scope blocks provided below only — every block you were handed is already in scope, don't second-guess that scoping.`,
     `- Do not fabricate or hallucinate block slugs, titles, or content — only reference blocks provided in the input below.`,
+    `- Some gaps are marked as RENDERED BY AN APP (an App Kit page that reads the block as a sheet of \`Label: value\` lines, such as a Space's Brief). For those, the shape rule on the gap line is part of being ready-to-post: write recommendedContent as \`- **Label**: value\` lines only, in the order given, leaving out a label with nothing on record. Headed markdown or prose there is not a weaker draft, it is an invisible one.`,
     `- Never fabricate content to fill a gap. Only draft a gap's recommendedContent when you can genuinely ground it in facts or context actually given to you in this prompt. If a gap concerns something you have no real information about — a legal policy's actual text, financial specifics, HR criteria, partnership terms, anything not shown to you here — set recommendedContent to null and explain the gap in whyItMatters instead. Confident-sounding invented content is worse than an honest null: a human has to first realize it's fake before they can fix it.`,
     `- Most notes-scan items and most capture-queue tasks are NOT genuine fact candidates — operational escalations, one-off contact context, and engineering/repo conventions are all rejections. Judge every item and put its ref in exactly one place: a full entry in candidates for the genuine few, or a one-line {ref, reason} in rejectedCandidates for the rest. Never stretch a thin note into a placeholder draft; an empty Candidate Facts section is a valid, expected, good outcome in a healthy week.`,
     `- The summary is the only place you write freeform prose. Keep it to 2-5 short bullets, at most two sentences each — this is what a busy reader sees first, so lead with what's actually worth their attention, not an exhaustive restatement of every list below it.`,
@@ -157,7 +158,7 @@ function buildUserPrompt({ windowLabel, isFirstRun, inScopeBlocks, gapBlocks, ta
     `### ${b.stackTitle} / ${b.title} (blockSlug: ${b.slug})\n${b.content}`
   ).join("\n\n---\n\n");
 
-  const gapLines = gapBlocks.map(b => `- ${b.stackTitle} / ${b.title} (blockSlug: ${b.slug}) — no fact recorded`).join("\n") || "(none)";
+  const gapLines = gapBlocks.map(b => `- ${b.stackTitle} / ${b.title} (blockSlug: ${b.slug}) — no fact recorded${b.fields ? `; RENDERED BY AN APP: ${fieldsDraftRule(b.fields)}` : ""}`).join("\n") || "(none)";
 
   const taskLines = taskCandidates.map((t, i) => `- [T${i + 1} · task ${t.id}] "${t.title}"\n  ${(t.details || "").slice(0, 2000)}`).join("\n\n") || "(none)";
 
@@ -188,27 +189,17 @@ function buildUserPrompt({ windowLabel, isFirstRun, inScopeBlocks, gapBlocks, ta
 }
 
 // Every gap and candidate needs a full ready-to-post recommendedContent draft (see SCHEMA),
-// so this call's output grows with the fact base. It has now truncated outright twice, both
-// confirmed on live runs rather than reasoned about: 16000 died at 223 in-scope blocks (12
-// gaps + 9 candidates needing full drafts at once), and 32000 died at 280 in-scope blocks on
-// 2026-09-21. Configurable so the next raise needs no code change.
+// so this call's output grows with the fact base. 32000 truncates at the current size.
+// Configurable so the next raise needs no code change.
 //
 // This is the ceiling on the model's response, not a spend commitment — tokens are billed as
 // generated, and the only hard bound is the model's own 128k max output. anthropic.mjs
 // streams every request on a 15-minute budget, so a long response does not trip a
 // transport timeout either.
 //
-// 64000 since 2026-09-22. That 32000 failure threw six minutes in, before
-// anything was rendered or posted — the generation is paid for and the week's report is lost.
-// An immediate retry of the IDENTICAL dispatch succeeded: same 93 notes-scan candidates, same
-// 280 blocks, same 86 anomalies. Same input, different outcome is the signature of a ceiling
-// sitting on the edge of this fact base's output, not of a run that is too big.
-//
-// market-research-refresh-agent.mjs is the precedent, not a guess: same model, same
-// failure ("the first real run died ... having written nothing"), and it settled on
-// 64000 for the same reason. This is the other long-form drafting call in the fleet and
-// it now sizes the same. Judgment/classification calls stay in the 2.5k-8k band; only
-// these two draft whole documents.
+// A truncation throws before anything is rendered or posted, so the week's report is lost.
+// This and market-research-refresh-agent.mjs are the two long-form drafting calls and both
+// use 64000. Judgment/classification calls stay in the 2.5k-8k band.
 const MAX_TOKENS = parseInt(process.env.FACT_ALIGNMENT_MAX_TOKENS || "64000", 10);
 
 /** The model's own hard limit on output. A retry may not ask for more than this. */
@@ -239,15 +230,14 @@ export async function runFactAlignmentAgent({ windowLabel, isFirstRun, inScopeBl
 
 /** Candidates the model judged to be genuine, ready-to-post fact recommendations —
  *  used both for the report's Candidate Facts section and anywhere a candidate count is
- *  shown. Since 2026-10 `candidates` holds genuine ones only; the isGenuineFact filter
- *  stays so a response in the old shape (rejections inline) still renders correctly. */
+ *  shown. `candidates` should hold genuine ones only; the isGenuineFact filter keeps a
+ *  response with rejections inline rendering correctly. */
 export function genuineCandidates(result) {
   return Array.isArray(result.candidates) ? result.candidates.filter(c => c.isGenuineFact !== false) : [];
 }
 
 /** Did the model adjudicate every candidate it was given? The short refs make this
- *  checkable, which the old all-inline shape never was: a run that skipped items just
- *  reported fewer of them. `missing` = refs given but answered nowhere; `unknown` = refs
+ *  checkable. `missing` = refs given but answered nowhere; `unknown` = refs
  *  answered that were never given. Report-only — a gap here is a warning, not a failure,
  *  because the closeout iterates the board and does not depend on the model's answer. */
 export function triageCoverage(result, { taskCount = 0, noteCount = 0 } = {}) {
@@ -269,22 +259,18 @@ export function triageCoverage(result, { taskCount = 0, noteCount = 0 } = {}) {
 /* ---------------- recommendation manifest ---------------- */
 
 /**
- * 2 — contradiction/overlap entries carry an excerpt PAIR (mode "excerpt") instead of a
- * whole-document `content`, after v1's full-document apply path destroyed three facts on
- * 2026-08-17 by posting a model-drafted edit instruction verbatim. That apply path was removed
- * entirely on 2026-08-31; the excerpt pair outlived it as the report's presentation format,
- * because showing one exact span to swap is also the clearest thing to hand a human.
+ * 2: contradiction/overlap entries carry an excerpt PAIR (mode "excerpt"), never a
+ * whole-document `content`. Never post a model-drafted whole document as a fact: it can be
+ * an edit instruction and destroys the fact.
  *
- * Retained v1 manifests keep their old shape for up to FACT_ALIGNMENT_MANIFEST_RETENTION_DAYS
- * (60) after the change, so both shapes coexist in the ledger for about two months. A v1 entry
- * simply has no `mode` — the field postdates it.
+ * Retained v1 manifests keep their old shape for up to FACT_ALIGNMENT_MANIFEST_RETENTION_DAYS,
+ * so both shapes can coexist in the ledger. A v1 entry has no `mode`.
  */
 export const MANIFEST_VERSION = 2;
 
 // G/C/O/F mirror the report's four finding sections. Hyphen-and-uppercase only, no
 // underscores: the NOAN UI markdown-escapes underscores inside fact content (`TRIGGER_TAGS`
-// is stored as `TRIGGER\_TAGS`), which silently broke the general agent's tuning line for
-// its entire lifetime. These ids are quoted back by humans and will eventually be parsed
+// is stored as `TRIGGER\_TAGS`). These ids are quoted back by humans and will eventually be parsed
 // out of replies, so keep them free of any character the UI rewrites.
 const KIND_PREFIX = { gap: "G", contradiction: "C", overlap: "O", candidate: "F", website: "W" };
 
@@ -341,6 +327,8 @@ export function buildManifest({ windowKey, windowLabel, result, baseFactIdOf, cr
     const hasBody = isExcerpt || Boolean(body);
     const mode = isExcerpt ? "excerpt" : (body ? "full" : null);
     const reason = blockedReason || (!slug ? "no target block" : !hasBody ? "no drafted content" : null);
+    // A blockedReason on an entry WITH a body is a draft that exists but cannot be posted as
+    // written (a fields-bound gap the page would not render), so it is not applicable either.
     entries.push({
       id: `FA-${windowKey}-${KIND_PREFIX[kind]}${index + 1}`,
       kind,
@@ -355,7 +343,7 @@ export function buildManifest({ windowKey, windowLabel, result, baseFactIdOf, cr
       // Applicable = there is a concrete block to write and exact text to write to it.
       // An ungrounded gap and a candidate needing a brand-new block are both real findings
       // worth reporting, but neither is a fact POST anyone can make from this manifest.
-      applicable: Boolean(slug) && hasBody,
+      applicable: Boolean(slug) && hasBody && !blockedReason,
       blockedReason: reason,
     });
   };
@@ -364,7 +352,8 @@ export function buildManifest({ windowKey, windowLabel, result, baseFactIdOf, cr
     blockSlug: g.blockSlug,
     content: g.recommendedContent,
     label: `${g.blockTitle} (${g.stackTitle})`,
-    blockedReason: g.recommendedContent ? null : "no drafted content — needs a human to fill in directly",
+    blockedReason: !g.recommendedContent ? "no drafted content — needs a human to fill in directly"
+      : g.formatProblem ? `drafted ${g.formatProblem}` : null,
   }));
 
   (result.contradictions || []).forEach((c, i) => add("contradiction", i, {
@@ -461,24 +450,20 @@ export function renderWebsiteSection({ site, manifest, bodyBudget = null }) {
 /* ---------------- fitting the report into a NOAN note ----------------
  * The report is delivered twice: emailed in full, and posted as a NOAN note that is the
  * durable archive a later session reads back. `POST /notes` hard-caps content at 25,000
- * characters, and by September 2026 the report had outgrown it on EVERY run — 31,807 chars
- * on 2026-09-07, 27,252 on 2026-09-21. postNote() cut the tail at a line boundary with a
- * marker, so the runs stayed green while the note silently lost whole sections. Both of
- * those runs lost part or all of Candidate Facts, which is the section proposing new facts
- * — precisely the content someone comes back to act on.
+ * characters and the report routinely exceeds it. postNote() would cut the tail, silently
+ * losing whole sections such as Candidate Facts.
  *
- * The fix is not a bigger cap (there isn't one) and not dropping findings. The bulk of the
- * length is the quoted bodies — `Recommended content:` blocks and the before/after excerpt
- * pairs — so the note clips THOSE, smallest budget that fits, and keeps every finding's id,
+ * Never drop findings to fit. The bulk of the length is the quoted bodies (`Recommended
+ * content:` blocks and the before/after excerpt pairs), so the note clips THOSE, smallest
+ * budget that fits, and keeps every finding's id,
  * label, title, slug and rationale intact. A reader of the note still sees every
  * recommendation and its disposition; only the drafted prose is abbreviated, with a pointer
  * to the emailed copy that still carries it in full.
  *
  * The email is never clipped: renderReport's default budget is null. */
 
-/** Bounds on the per-body budget the search below picks from. The ceiling is above any body
- *  the report has ever carried (the longest real recommended-content block to date is ~2,600
- *  characters), so a report that fits is never clipped for no reason. The floor is low enough
+/** Bounds on the per-body budget the search below picks from. The ceiling sits above any
+ *  realistic recommended-content block, so a report that fits is never clipped for no reason. The floor is low enough
  *  that a pathological run still fits; below it the entries themselves would have to go, which
  *  is the one thing this is designed never to do. */
 export const NOTE_MAX_BODY_BUDGET = 3000;
@@ -514,7 +499,7 @@ function renderExcerptPair(targetSlug, oldExcerpt, newExcerpt, bodyBudget = null
   ].join("\n");
 }
 
-export function renderReport({ windowLabel, result, manifest, site, missingFactReviewTag, malformedCaptures = [], deliberatelyEmptyCount = 0, emptyRecipients, bodyBudget = null }) {
+export function renderReport({ windowLabel, result, manifest, site, missingFactReviewTag, malformedCaptures = [], factSizes = [], deliberatelyEmptyCount = 0, emptyRecipients, bodyBudget = null }) {
   const candidates = genuineCandidates(result);
 
   // Ids are assigned by position, so a manifest that doesn't line up with what's about to
@@ -540,6 +525,7 @@ export function renderReport({ windowLabel, result, manifest, site, missingFactR
   if (missingFactReviewTag) summaryLines.push(`The "fact review" tag does not exist in NOAN — the review task was created untagged. Create the tag in the NOAN UI to fix this going forward.`);
   if (emptyRecipients) summaryLines.push(`No contacts carry the report recipient tag — this report was not emailed.`);
   if (deliberatelyEmptyCount) summaryLines.push(`${deliberatelyEmptyCount} empty block(s) marked deliberately empty were left out of Gaps.`);
+  if (factSizesSummary(factSizes)) summaryLines.push(factSizesSummary(factSizes));
   if (malformedCaptures.length) summaryLines.push(`${malformedCaptures.length} backlog task(s) look like a fact capture but do not carry the \`[Fact Candidate]\` title prefix, so they were not picked up — see Malformed Captures.`);
 
   const parts = [`# Weekly Fact Alignment Report — ${windowLabel}`];
@@ -553,7 +539,7 @@ export function renderReport({ windowLabel, result, manifest, site, missingFactR
   parts.push("", "## Gaps");
   parts.push(result.gaps.length
     ? result.gaps.map((g, i) => `- ${tag("gap", i)}**${g.blockTitle}** (\`${g.blockSlug}\`, in ${g.stackTitle}) — ${g.whyItMatters}\n\n  ${g.recommendedContent
-        ? `Recommended content:\n  > ${clipBody(g.recommendedContent, bodyBudget).replace(/\n/g, "\n  > ")}`
+        ? `${g.formatProblem ? `Format check: drafted ${g.formatProblem}\n\n  ` : ""}Recommended content:\n  > ${clipBody(g.recommendedContent, bodyBudget).replace(/\n/g, "\n  > ")}`
         : `Recommended content: insufficient context this run to draft real content — needs a human to fill this in directly.`}`).join("\n\n")
     : "No gaps found this run.");
 
@@ -568,6 +554,9 @@ export function renderReport({ windowLabel, result, manifest, site, missingFactR
     : "No overlaps found this run.");
 
   parts.push(...renderWebsiteSection({ site, manifest, bodyBudget }));
+
+  // Deterministic, like Malformed Captures below: a character count is not a judgment call.
+  parts.push(...renderFactSizes(factSizes));
 
   parts.push("", "## Candidate Facts");
   parts.push(candidates.length

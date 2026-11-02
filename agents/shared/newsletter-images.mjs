@@ -3,14 +3,13 @@
  * email can show.
  *
  * WHERE. Supabase Storage, a public bucket (`newsletter-images`) in the project
- * the fleet already runs. Not the company site: the site's host went down on
- * 2026-09-21 while the first test issue was being read, and every image in an
- * email depends on its host at the moment someone OPENS it, days after it was
+ * the fleet already runs. Not the company site: every image in an email
+ * depends on its host at the moment someone OPENS it, days after it was
  * sent. Not R2 on our own domain: that needs the domain's DNS on Cloudflare.
  *
  * NO IMAGE LIBRARY. The hosted Slack service deploys without an install step,
- * so this is plain Node. The resizing is Supabase's own image transformation,
- * probed 2026-09-21: it resizes without upscaling, applies a phone photo's
+ * so this is plain Node. The resizing is Supabase's own image transformation:
+ * it resizes without upscaling, applies a phone photo's
  * rotation tag, and drops the metadata (location included). So the original is
  * put in a PRIVATE staging bucket, read back once through a signed transform
  * URL, and only the result is stored in the public bucket. The original, with

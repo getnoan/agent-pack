@@ -3,13 +3,11 @@
  * The scheduling lane with no Google Calendar connected.
  *
  * The agent pack ships the scheduling lane, and most people who install it will
- * not have connected a calendar. Until 2026-10-03 that went badly: freeBusy threw
- * "No Google credentials", a teammate's "find a time with X" was left
- * "unprocessed for next run", and every later run retried the same email while
- * the teammate heard nothing. A customer's "can we meet?" got a classifier call
- * and a log line blaming the classifier.
+ * not have connected a calendar. An unconfigured calendar must not leave a
+ * teammate's "find a time with X" unprocessed, so every later run retries it
+ * while the teammate hears nothing.
  *
- * Now: calendarConfigured() says whether a credential exists, the teammate is told
+ * calendarConfigured() says whether a credential exists, the teammate is told
  * once ("not configured yet: GOOGLE_SERVICE_ACCOUNT_JSON") and the email is marked
  * handled, and a customer's ask routes as ordinary mail.
  *
