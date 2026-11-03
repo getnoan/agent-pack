@@ -3,24 +3,15 @@
  * split out so it can be tested; reply-worker runs its poll on import.
  *
  * A backlog task tagged `support` and assigned to the agent is its cue to open a
- * support conversation with the task's contact. Two things used to make a
- * task disappear from that scan for good (until 2026-09-10):
+ * support conversation with the task's contact.
  *
- *   - no contact resolved → escalate() and a ledger entry {status:"no-contact"};
- *   - the outreach draft failed its guards → escalate() and {status:"escalated"};
- *
- * and the scan skipped ANY ledgered task. Linking the contact afterwards and
- * re-assigning the agent did nothing: the entry was permanent. Every escalation
- * filed by an external intake is filed without a contact until
- * the platform can link one at filing time, so that was the normal case, not the edge.
- *
- * Since 2026-09-10 those two outcomes PARK the task instead (parkForHuman:
- * needs-human, the agent off, the CS owner on) and write nothing to the ledger. Parked
- * means unassigned, and unassigned does not trigger — so re-assigning the agent
- * is the retry, the fleet's own convention, with no expiry logic and no
- * re-scan cost. The ledger keeps only `sent`, which is the one outcome a
- * second scan must never repeat. Older `no-contact` / `escalated` entries are
- * therefore retryable, not blocking.
+ * No resolvable contact, or an outreach draft that fails its guards, parks the
+ * task (parkForHuman: needs-human, the agent off, the CS owner on) and writes
+ * nothing to the ledger. Parked means unassigned, and unassigned does not
+ * trigger, so re-assigning the agent is the retry. External intakes file
+ * escalations without a contact, so this is the normal case.
+ * The ledger keeps only `sent`, the one outcome a second scan must never
+ * repeat. Any other ledger status (`no-contact`, `escalated`) must not block a retry.
  */
 
 import { taskTriggers, taskHasTag, taskContactId } from "../shared/noan.mjs";
@@ -35,7 +26,7 @@ const LEGACY_TITLE_RX = /^\s*\[support\]/i;
 
 /** True when this task should be worked on this scan. Only a SENT ledger
  *  entry blocks: everything else is either parked (unassigned, so it does not
- *  trigger anyway) or a pre-2026-09-10 entry that must not block a retry. */
+ *  trigger anyway) or an old entry that must not block a retry. */
 export function supportTaskDue(task, ledgerEntry, { triggerTag = DEFAULT_SUPPORT_TAG } = {}) {
   if (!task || task.completed) return false;
   if (ledgerEntry?.status === "sent") return false;
@@ -64,16 +55,13 @@ export function unparkedTagIds(task) {
   return (task.tags || []).filter(t => String(t.name || "").toLowerCase() !== PARK_TAG_NAME).map(t => t.id);
 }
 
-/* ---------------- comments as the hand-back (2026-09-10) ----------------
+/* ---------------- comments as the hand-back ----------------
  *
- * Until now the support lane had exactly one door back in: re-assign the agent in
- * the NOAN UI. A teammate commenting on a parked support task got silence —
- * the reply worker never read comments, only the general, deck, demo and
- * sdr-reply lanes did (task-comments.mjs). Now a teammate comment that
- * addresses it re-arms the task: needs-human cleared, the agent assigned, and
- * the comment text rides into the outreach draft as guidance.
+ * Besides re-assigning the agent, a teammate comment that addresses it
+ * re-arms a parked support task: needs-human cleared, the agent assigned, and
+ * the comment text goes into the outreach draft as guidance.
  *
- * Deliberately narrow, decided in code:
+ * Deliberately narrow:
  *   - only a TEAMMATE comment (commander or the teammate domain, API-verified author;
  *     external comments are logged and dropped, the agent's own never count);
  *   - only one that addresses it: mentions the agent's name (with or without @) or
@@ -104,20 +92,16 @@ export function supportCommentRearm(task, steering, { cursor = null, since = nul
   return { fresh, rearm: addressing.length ? addressing[addressing.length - 1] : null };
 }
 
-/* ---------------- expired cases close their task (2026-10-07) ----------------
+/* ---------------- expired cases close their task ----------------
  *
- * A support task opens a case, the task goes in-progress, and only
- * closeCaseTask() takes it out again — which ran solely when the CUSTOMER
- * replied and the case resolved or escalated. pruneCases() marks an unanswered
- * case `expired` after CASE_EXPIRY_DAYS and did nothing else, so every outreach
- * that got no reply left its task in-progress for good. Found on a one-way
- * correction that by design expected no reply; every task-opened case on the
- * ledger that day had one turn and had been closed, if at all, by hand.
+ * A support task opens a case and goes in-progress. closeCaseTask() runs only
+ * when the customer replies, and pruneCases() marks an unanswered case
+ * `expired` after CASE_EXPIRY_DAYS. Without this step an unanswered outreach
+ * leaves its task in-progress for good.
  *
- * Now an expired case with a task PARKS that task: the outreach went out and
- * nobody answered, which is a person's call (close it, or follow up), not the
- * agent's. Re-assigning the agent does not re-send — the `sent` ledger entry
- * still blocks — so the comment says what the options actually are.
+ * An expired case with a task PARKS that task: close it or follow up is a
+ * person's call. Re-assigning the agent does not re-send (the `sent` ledger
+ * entry still blocks), so the comment says what the options actually are.
  *
  * `taskSettled` on the case makes this run once per case. A task the board
  * read did not return (pagination drops rows; or it was deleted) is retried on
@@ -128,7 +112,7 @@ export const EXPIRED_TASK_MAX_MISSES = 3;
 
 /** Cases whose task still needs settling, as [email, case] pairs. */
 export function expiredCasesToSettle(cases = {}) {
-  return Object.entries(cases || {}).filter(([, c]) => c?.status === "expired" && c.taskId && !c.taskSettled);
+  return Object.entries(cases || {}).filter(([, c]) => c?.status === "expired" && caseTaskIds(c).length && !c.taskSettled);
 }
 
 /** What to do with an expired case's task, given the live task (or undefined).
@@ -149,4 +133,43 @@ export function expiredCaseComment(kase, { agentName = "the agent", expiryDays =
   return `No reply in ${expiryDays} days to the outreach sent ${sent}${kase?.subject ? ` ("${kase.subject}")` : ""}, so the support case has expired. ` +
     `Close this task if nothing more is needed, or follow up with the contact yourself. ` +
     `Re-assigning ${agentName} will not send it again.`;
+}
+
+/* ---------------- an open case does not block the next task ----------------
+ *
+ * A "reply" outreach opens a case that stays open until the customer answers
+ * or it expires (CASE_EXPIRY_DAYS). The scan used to skip every later support
+ * task for that contact meanwhile, silently, so one answered FDA escalation
+ * held up the next for up to two weeks. A customer's coding agent asks a series of
+ * independent questions, and every support task is a person's deliberate
+ * hand-back, so the new task now goes out and JOINS the open case: its turn is
+ * appended, and a "reply" verdict adds its task to `taskIds` so the case closes
+ * or expires every task it carries. A "resolve" verdict joins the turns only:
+ * its task is done on send. Cases stay keyed by email, so any reply from the
+ * customer continues the one conversation, as it already did. */
+
+/** Every task a case carries: the one that opened it, then the joined ones. */
+export function caseTaskIds(kase) {
+  return [...new Set([kase?.taskId, ...(kase?.taskIds || [])].filter(Boolean))];
+}
+
+/** The case record after an outreach for `taskId` is sent. Returns
+ *  { kase, joined }: `joined` when an open case was extended rather than a new
+ *  one written. The open case is mutated in place, never replaced, so its
+ *  turns, exchanges and opener survive. */
+export function caseAfterOutreach(existing, { taskId, subject, resolved, summary, who, now }) {
+  const turn = { at: now, who, summary };
+  if (existing?.status === "open") {
+    existing.turns = [...(existing.turns || []), turn].slice(-16);
+    if (!resolved && taskId && !caseTaskIds(existing).includes(taskId)) existing.taskIds = [...(existing.taskIds || []), taskId];
+    return { kase: existing, joined: true };
+  }
+  return {
+    joined: false,
+    kase: {
+      id: `task:${taskId}`, taskId, status: resolved ? "resolved" : "open",
+      openedAt: now, openedBy: "task", ...(resolved ? { closedAt: now } : {}),
+      subject, turns: [turn],
+    },
+  };
 }

@@ -5,19 +5,17 @@
  *
  * Why this earns cover: COMMANDERS mail runs capabilities (deck, audit,
  * onboard, fact splices, task creation) with no further human in the loop.
- * Until 2026-09-10 the gate was `/dkim=pass/` AND `/example\.com/` over the
- * joined Authentication-Results value — two independent substring matches.
- * Mail signed by an attacker's own domain with a forged From: alex@example.com
- * yields `dkim=pass header.i=@attacker.example; dmarc=fail
- * header.from=example.com`, which satisfies both. The first block below keeps
- * the old function verbatim and PROVES it accepts that mail, so the weakness
- * is on record and nobody "simplifies" back to it.
+ * `/dkim=pass/` AND `/example\.com/` over the joined Authentication-Results
+ * value is not a gate: mail signed by an attacker's own domain with a forged
+ * From: alex@example.com yields `dkim=pass header.i=@attacker.example;
+ * dmarc=fail header.from=example.com`, which satisfies both. The first block
+ * below keeps that function and PROVES it accepts that mail, so nobody
+ * "simplifies" back to it.
  *
  * Fixtures are shaped exactly like Resend's GET /emails/receiving/{id}: a
  * `headers` object keyed by lowercase name, values plain strings, and a header
- * that repeats encoded as a JSON STRING of an array (that is what Resend does —
- * verified against 49 live inbounds on 2026-09-10; a native array is accepted
- * too). The genuine Authentication-Results lines are copied from real
+ * that repeats encoded as a JSON STRING of an array (that is what Resend does;
+ * a native array is accepted too). The genuine Authentication-Results lines are copied from real
  * example.com inbounds, with IPs and signatures elided.
  *
  * No network, no writes.  Run:  node test-commander-auth.mjs
@@ -67,7 +65,7 @@ const FORGED_SES = "amazonses.com; spf=pass client-ip=192.0.2.50; envelope-from=
 
 /* ---------- 1. the weakness, on record ---------- */
 
-/** reply-worker.mjs dkimVerified() as it stood before 2026-09-10, verbatim. */
+/** The two-substring dkimVerified() described above, kept to prove it is unsafe. */
 function legacyHeaderValue(full, name) {
   const h = full?.headers;
   if (!h) return "";

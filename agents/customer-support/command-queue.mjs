@@ -6,14 +6,11 @@
  * network and no writes, and its test upstream pins it. The worker still
  * performs every write (create, tag, assign, link, note) in deterministic code.
  *
- * Why this file exists (2026-09-08): every
- * report email carries a Reply-To on a monitored inbound address and a DKIM-verified
- * reply from a commander reaches the command agent — but its tool schema had
- * no `general` type, so "do recommendation 2" became a todo nobody claimed.
- * The quoted report reached the MODEL (the inbound body is not quote-stripped)
- * and was then lost, because the model wrote the task details itself and
- * paraphrased. So for `general` the WORKER appends the quoted email, verbatim,
- * under a divider that names it as context rather than instructions.
+ * A DKIM-verified reply from a commander to a report email reaches the command
+ * agent, and "do recommendation 2" becomes a `general` task. The model writes
+ * the task details itself and paraphrases, so for `general` the WORKER appends
+ * the quoted email, verbatim, under a divider that names it as context rather
+ * than instructions.
  */
 
 import { registryEntry } from "./trigger-tags.mjs";
@@ -26,7 +23,7 @@ export const DETAILS_CAP = 2048;
 /** What can actually run. A capability must be listed BOTH here and in the
  *  capabilities fact to execute — the fact steers the model, this map is the
  *  hard boundary in code.
- *  Since 2026-07-24 dispatch is by TAG + ASSIGNMENT, not title markers:
+ *  Dispatch is by TAG + ASSIGNMENT, not title markers:
  *  triggerTag is the agent-trigger tag; tag is an extra category tag for the
  *  board. pending capabilities are created tagged but UNassigned — the
  *  requester's CONFIRM assigns the agent, which is what triggers it. */
@@ -35,7 +32,7 @@ export const EXECUTABLE = {
   onboard:    { triggerTag: "onboard",    tag: "customer success",     needsContact: true, pending: true },
   followup:   {                           tag: "Sales",                needsContact: true, followupTitle: true },
   reengage:   { triggerTag: "reengage",   tag: "Sales",                needsContact: true, pending: true },
-  activation: { triggerTag: "activation", tag: "customer success",     needsContact: true }, // no CONFIRM since 2026-08-03 (decided then) — code guards only
+  activation: { triggerTag: "activation", tag: "customer success",     needsContact: true }, // no CONFIRM: code guards only
   social:     { triggerTag: process.env.SOCIAL_TRIGGER_TAG || "Social", needsContact: false },
   linkedin:   { triggerTag: process.env.LINKEDIN_TRIGGER_TAG || "LinkedIn", needsContact: false },
   // a plain to-do for a HUMAN: created bare and left unassigned; no automation runs on it
@@ -61,7 +58,7 @@ export function warnUnregisteredTriggers(warn = console.warn) {
 }
 
 export function buildTaskTitle(cap, title) {
-  // strip any [marker] the model smuggled into the title — markers are retired
+  // strip any [marker] the model smuggled into the title: dispatch never uses markers
   const clean = String(title || "").replace(/^\s*(\[[^\]]+\]\s*)+/, "").trim();
   if (cap.followupTitle && !/^\s*follow[\s-]*up\b/i.test(clean)) return `Follow up — ${clean}`;
   return clean;
@@ -130,11 +127,6 @@ export function ownWords(body) {
 
 /**
  * Decide whether the worker should CREATE the contact a command names.
- *
- * Until 2026-09-09 a deck/onboard/followup command naming an address with no
- * NOAN contact died in planQueuedTask with "not found in NOAN" — and the
- * command agent's prompt told the model to decline even earlier. The teammate
- * then created the contact by hand and re-sent the same email.
  *
  * Trust boundary, code-verified: the address must appear in the TEAMMATE'S OWN
  * words — the subject, or the body above any quoted/forwarded block (ownWords)

@@ -1,40 +1,28 @@
 #!/usr/bin/env node
 /**
- * Market research refresh — worker. Refreshes the 4 blocks of the "Market Research"
- * stack (Company Context, Culture Signals, Category Dynamics, Customer Insights) with
- * real external research, posting a refined fact directly to each — no review gate,
- * unattended by design. Ports .claude/skills/noan-market-research-refresh/SKILL.md.
+ * Market research refresh worker. Refreshes the 4 blocks of the "Market Research" stack
+ * (Company Context, Culture Signals, Category Dynamics, Customer Insights) with real
+ * external research, posting a refined fact to each unattended, with no review gate.
  *
- * Deliberately stateless (confirmed in the Agent Config: the facts' own content/
- * createdAt already serve as baseline and staleness signal) — no state row for this
- * automation.
+ * Deliberately stateless: the facts' own content and createdAt serve as baseline and
+ * staleness signal, so there is no state row.
  *
- * Cron fires weekly (Mondays) but the automation itself must no-op unless today falls
- * in the 1st-7th of the month ("first Monday" cadence) — checked before ANY API call,
- * per the source skill's explicit instruction.
+ * Cron fires weekly (Mondays) but the run must no-op unless today falls in the 1st-7th
+ * of the month ("first Monday" cadence), checked before ANY API call.
  *
- * This repo's runtime has no live web-search/fetch tool, so the original skill's
- * WebSearch/WebFetch research step is ported onto Firecrawl (the search and scrape scripts
- * under scripts/), called deterministically by the WORKER, not the model — a
- * two-phase design (plan, then execute) rather than a live tool loop, matching the
- * fleet's read-tools-only-via-worker discipline:
+ * The runtime has no live web-search/fetch tool, so research runs on Firecrawl (scripts/),
+ * called deterministically by the WORKER, never by the model: plan, then execute.
  *   1. Cadence gate.
  *   2. Resolve the Market Research stack + its 4 blocks (title-matched, not hardcoded
  *      slugs) and read back each one's current fact as baseline; flag any mismatch.
- *   3. Ground Company Context ONLY against the company's own internal facts FIRST (product,
- *      strategy, monetization, positioning, pricing blocks) — internal facts are ground
- *      truth that supersedes web content on conflict; this ordering is load-bearing per
- *      a documented past incident.
- *   4. Model call #1 (no tools): plan up to 3 search queries + up to 2 direct-scrape
- *      URLs per block.
- *   5. Worker executes that plan deterministically via the Firecrawl scripts, capped in
- *      code regardless of what the model asked for, logging (not aborting) on a failed
- *      fetch.
- *   6. Model call #2 (no tools): classify + draft refined content per block, plus the
- *      report's Key Takeaways / Discussion Points / executive summary.
- *   7. Post all 4 facts (retry once per block on failure, continue + flag rather than
- *      abort the whole run), post a NOAN note, email the report recipients (with the
- *      email-only executive summary prepended to a COPY of the report).
+ *   3. Ground Company Context ONLY against the company's own internal facts FIRST: they
+ *      are ground truth that supersedes web content on conflict. This order is load-bearing.
+ *   4. Model call #1 (no tools): plan up to 3 search queries + up to 2 scrape URLs per block.
+ *   5. The worker runs that plan via the Firecrawl scripts, capped in code regardless of
+ *      what the model asked for, logging (not aborting) on a failed fetch.
+ *   6. Model call #2 (no tools): draft each block, plus Key Takeaways / Discussion Points / summary.
+ *   7. Post all 4 facts (retry once per block, continue + flag rather than abort), post a
+ *      NOAN note, email the report recipients (executive summary prepended to a COPY).
  *
  * Env:
  *   NOAN_PERSONAL_API_KEY, ANTHROPIC_API_KEY, RESEND_API_KEY, MAIL_FROM,
@@ -69,10 +57,9 @@ const EXPECTED_BLOCK_TITLES = ["Company Context", "Culture Signals", "Category D
 // automation can name their own blocks. These arrays are only the fallback for a config fact
 // that has no fence yet. Same [[FENCE]] convention as the other grounding workers upstream.
 //
-// Slugs, not title keywords (which is what this used to do). Keyword matching silently failed
-// in both directions: "mission vision" never matched the block actually titled "Mission &
-// Vision", so that fact had never once reached the prompt, while "value proposition" also
-// matched the recruitment stack's Employer Value Proposition and fed it to Company Context.
+// Slugs, never title keywords: keyword matching fails silently both ways. "mission vision"
+// misses the block titled "Mission & Vision", and "value proposition" also matches the
+// recruitment stack's Employer Value Proposition.
 // Managed (every-workspace) slugs only. Workspace-specific ones — a workspace's own
 // pricing blocks carry a workspace hash — come from MARKET_RESEARCH_GROUNDING_EXTRA_SLUGS.
 const DEFAULT_COMPANY_CONTEXT_GROUNDING = [
@@ -80,14 +67,23 @@ const DEFAULT_COMPANY_CONTEXT_GROUNDING = [
   "business-vision", "mission-vision", "value-proposition", "brand-positioning",
   ...(process.env.MARKET_RESEARCH_GROUNDING_EXTRA_SLUGS || "").split(",").map(x => x.trim()).filter(Boolean),
 ];
-// Customer Insights is the ICP block, and until now it was the only target block researched
-// with no internal anchor at all — rewritten unattended from web research about buyers in
-// general. These are the company's own decisions about who it sells to; same set x-prospector grounds
-// its ICP scoring in. Audience Pain Points is deliberately excluded: thin, stale since April,
-// and covered by the others.
+// Customer Insights is the ICP block, so it is anchored on the company's own decisions about
+// who it sells to, never only on web research about buyers in general. Same set x-prospector
+// grounds its ICP scoring in. Audience Pain Points is deliberately excluded: thin and covered
+// by the others.
 const DEFAULT_ICP_GROUNDING = [
   "ideal-customer", "sales-customer-profile", "sales-buyer-persona", "sales-buyer-segments",
-  "sales-ICP-triggers", "audience-segments",
+  "sales-icp-triggers", "audience-segments",
+];
+// Category Dynamics is anchored on what the company sells and to whom. Without that anchor its
+// competitor list can only grow: the planner queries from the competitors already named, the
+// drafter never drops what it cannot disprove, and a competitor that does not compete for the
+// company's buyer is not "demonstrably wrong". These facts are the yardstick every named
+// competitor is re-tested against, and the starting point for at least one discovery query per
+// run. Managed slugs only;
+// workspace-specific ones (an enterprise ICP, a product narrative) go in the config fence.
+const DEFAULT_CATEGORY_DYNAMICS_GROUNDING = [
+  "value-proposition", "brand-positioning", "ideal-customer", "audience-segments",
 ];
 const GROUNDING_FACT_CHAR_CAP = 9000; // the multi-block grounding cap
 
@@ -116,9 +112,8 @@ function required(name) {
 //
 // Deliberately stricter than that copy: the delimiters must each sit alone on their own line.
 // The loose version anchors on the first `[[NAME]]` anywhere in the text, so a config fact that
-// merely *mentions* its own fence in prose — which this one's step 3 did — opens the match
-// early and swallows the whole document as "slugs". Caught before first run; the fence returned
-// 26 and 33 entries instead of 12 and 6.
+// merely *mentions* its own fence in prose opens the match early and swallows the whole
+// document as "slugs".
 function parseFence(text, name) {
   const m = unescapeUi(text).match(
     new RegExp(`^\\[\\[${name}\\]\\][ \\t]*\\r?\\n([\\s\\S]*?)\\r?\\n[ \\t]*\\[\\[\\/${name}\\]\\][ \\t]*$`, "m"));
@@ -150,6 +145,7 @@ async function loadAgentBrain() {
     playbook,
     companyContextSlugs: fenceSlugs(config, "GROUNDING_COMPANY_CONTEXT", DEFAULT_COMPANY_CONTEXT_GROUNDING),
     icpSlugs: fenceSlugs(config, "GROUNDING_CUSTOMER_INSIGHTS", DEFAULT_ICP_GROUNDING),
+    categorySlugs: fenceSlugs(config, "GROUNDING_CATEGORY_DYNAMICS", DEFAULT_CATEGORY_DYNAMICS_GROUNDING),
   };
 }
 
@@ -175,8 +171,8 @@ async function resolveMarketResearchBlocks() {
 
 async function loadBaselineFacts(blocks) {
   const qs = blocks.map(b => `block_slug=${encodeURIComponent(b.slug)}`).join("&");
-  // per_page=100 for the same reason as loadGroundingFacts below — 4 blocks is under the
-  // default page size today, but this is one managed-stack change away from truncating.
+  // per_page=100 for the same reason as loadGroundingFacts below: the default page size
+  // truncates any stack that grows past it.
   const res = await noanGet(`/facts?${qs}&per_page=100`);
   const bySlug = new Map((res.items || []).map(f => [f.blockSlug, f]));
   return blocks
@@ -195,15 +191,12 @@ async function loadGroundingFacts(slugs, label) {
   const blocks = await noanGetAll(`/blocks?${blockQs}&per_page=100`).catch(() => []);
   const titleBySlug = new Map(blocks.map(b => [b.slug, b.title]));
 
-  // per_page=100 is load-bearing, not decoration: GET /facts defaults to per_page=10, so a
-  // grounding list longer than ten silently came back a page at a time. That is exactly what
-  // happened here — 12 configured slugs returned 10, and product-strategy (2.3k chars) and
-  // brand-positioning were dropped from Company Context's grounding on every run, reported as
-  // "no fact" when both facts existed and were readable.
+  // per_page=100 is load-bearing: GET /facts defaults to per_page=10, so a grounding list
+  // longer than ten silently drops the rest, reported as "no fact".
   //
   // Do NOT "fix" this with noanGetAll: the API's links.next drops the block_slug filters
   // (next is bare `/api/facts?page=2&per_page=10`), so following it pages through EVERY fact in
-  // the project — 317 of them — and would splice unrelated facts into the grounding prompt.
+  // the project and would splice unrelated facts into the grounding prompt.
   // Same is true of /blocks. One page of up to 100 is the correct shape here.
   const factQs = unique.map(s => `block_slug=${encodeURIComponent(s)}`).join("&");
   const facts = await noanGet(`/facts?${factQs}&per_page=100`).catch(() => ({ items: [] }));
@@ -215,8 +208,7 @@ async function loadGroundingFacts(slugs, label) {
   const factBySlug = new Map(returned.map(f => [f.blockSlug, f]));
 
   // A slug named in the config fact that comes back with nothing is a config error the editor
-  // needs to see by name — the old keyword version could only report a count, so a typo or a
-  // renamed block just silently shrank the grounding set.
+  // needs to see by name, so a typo or a renamed block never silently shrinks the grounding set.
   const missing = unique.filter(s => !factBySlug.get(s)?.content);
   if (missing.length) log(`  warn: ${label}: no fact for ${missing.length} configured slug(s): ${missing.join(", ")}`);
 
@@ -305,7 +297,7 @@ async function main() {
 
   // Either NOAN key satisfies this. noan.mjs prefers the per-category key and refuses to run
   // with neither, so naming the shared key here would reject a correctly configured
-  // per-category run — and it is why the shared key had to stay in every workflow env block.
+  // per-category run.
   assertNoanKey();
   // Either model-key name satisfies this; see assertModelKey.
   assertModelKey();
@@ -329,7 +321,13 @@ async function main() {
     log(`  warn: no ICP grounding facts resolved — Customer Insights will be drafted from web research alone this run`);
   }
 
-  const plan = await planResearch({ blocks: baselineBlocks, brain });
+  const categoryDynamicsGrounding = await loadGroundingFacts(brain.categorySlugs, "Category Dynamics grounding");
+  log(`  ${categoryDynamicsGrounding.length}/${brain.categorySlugs.length} grounding fact(s) for Category Dynamics`);
+  if (!categoryDynamicsGrounding.length) {
+    log(`  warn: no Category Dynamics grounding facts resolved — competitors will be researched from the block's own list alone this run`);
+  }
+
+  const plan = await planResearch({ blocks: baselineBlocks, brain, categoryDynamicsGrounding });
   const totalQueries = plan.blockPlans.reduce((s, p) => s + p.queries.length, 0);
   const totalScrapes = plan.blockPlans.reduce((s, p) => s + p.scrapeUrls.length, 0);
   log(`  planned ${totalQueries} search(es), ${totalScrapes} direct scrape(s) across ${plan.blockPlans.length} block(s)`);
@@ -337,7 +335,7 @@ async function main() {
   const { researchByBlock, failedFetches } = executeResearchPlan(plan.blockPlans);
   if (failedFetches) log(`  warn: ${failedFetches} research fetch(es) failed — continuing with what succeeded`);
 
-  const draft = await draftBlocks({ blocks: baselineBlocks, researchByBlock, companyContextGrounding, customerInsightsGrounding, brain: brain.config, playbook: brain.playbook });
+  const draft = await draftBlocks({ blocks: baselineBlocks, researchByBlock, companyContextGrounding, customerInsightsGrounding, categoryDynamicsGrounding, brain: brain.config, playbook: brain.playbook });
   log(`  drafted ${draft.blocks.length} block(s), ${draft.keyTakeaways.length} key takeaway(s), ${draft.discussionPoints.length} discussion point(s)`);
 
   // Sources actually used, cross-referenced against what was really fetched (never trust

@@ -24,9 +24,8 @@ function escapeHtml(s) {
 
 function inline(text) {
   let t = escapeHtml(text);
-  // [text](https://…) → a link. Added 2026-09-09 so the PR sweep can link each PR
-  // number to GitHub: that report is worked by hand, and a click
-  // beats a lookup. escapeHtml has already run, so the href is entity-safe.
+  // [text](https://…) → a link, so the PR sweep can link each PR number to
+  // GitHub. escapeHtml has already run, so the href is entity-safe.
   t = t.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2">$1</a>');
   t = t.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
   t = t.replace(/`(.+?)`/g, "<code>$1</code>");

@@ -56,7 +56,7 @@ export const GROUNDING = {
       "business-vision", "mission-vision", "value-proposition", "brand-positioning",
       // ICP — what Customer Insights is anchored to
       "ideal-customer", "sales-customer-profile", "sales-buyer-persona", "sales-buyer-segments",
-      "sales-ICP-triggers", "audience-segments",
+      "sales-icp-triggers", "audience-segments",
     ],
   },
   "sales deck": {

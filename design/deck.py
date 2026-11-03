@@ -9,8 +9,9 @@ vision, usage metrics, case-study quotes, pricing). Renders a multi-slide HTML
 document to a PDF via headless Chrome (--print-to-pdf, 16:9), and copies it into
 the Google Drive folder named by deck_drive_dir.
 
-Against NOAN it reads (GET /tasks, GET /facts) and writes only to the task it
-is working: closed (status "done" + completed true) once the deck REACHED THE
+Against NOAN it reads tasks, facts and contacts. It writes a memo on each contact
+a deck reaches, the follow-up task for a sent deck, and the task it is
+working: closed (status "done" + completed true) once the deck REACHED THE
 PROSPECT, or PARKED for a human (needs-human tag, the agent unassigned, reason and
 deck location appended to the details) when it was routed to review instead.
 A parked task is worked from the board: a teammate comment "send" ships the
@@ -21,9 +22,8 @@ a private Supabase bucket at park time so a later send ships exactly the file
 the human approved, after the CI runner that built it is gone. Stdlib-only
 (urllib).
 
-The per-customer context currently comes from the task title + details. When the
-memo endpoint is exposed, meeting notes can be folded into build_prompt() as an
-extra context block with no structural change.
+The per-customer context comes from the task title + details, teammate comments,
+and the linked contact's memos (fetch_contact_context()).
 
 Usage:
   python3 deck.py --task <taskId>          # generate a deck for one follow-up task
@@ -32,8 +32,8 @@ Usage:
 import json, os, sys, time, argparse, urllib.request, urllib.error, urllib.parse
 import datetime, re, subprocess, base64, shutil
 
-# Portable paths (GitHub migration): DESIGN_DIR env wins; else the launchd-era
-# home dir if it exists; else the script's own directory (repo checkout).
+# Portable paths: DESIGN_DIR env wins; else ~/.noan-design-agent if it exists;
+# else the script's own directory (repo checkout).
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 _HOME_BASE = os.path.expanduser("~/.noan-design-agent")
 BASE = os.environ.get("DESIGN_DIR") or (_HOME_BASE if os.path.isdir(_HOME_BASE) else _SCRIPT_DIR)
@@ -56,12 +56,10 @@ SLIDE_W_IN, SLIDE_H_IN = 13.333, 7.5
 def _required_cfg(cfg, key):
     """Config that must be supplied, never guessed.
 
-    These used to default to our own addresses, which meant a downstream copy of
-    this agent mailed a stranger's decks and review copies to the fleet's own
-    inboxes. Caught by the
-    export secret scan on 2026-09-14. An unset value now stops the run and says
-    which key to set — a deck that does not send is recoverable; a deck sent to
-    the wrong company is not.
+    There is no default address: a default would make a downstream copy of
+    this agent mail its decks and review copies to the fleet's own inboxes.
+    An unset value stops the run and says which key to set. A deck that does
+    not send is recoverable; a deck sent to the wrong company is not.
     """
     v = (cfg.get(key) or "").strip()
     if not v:
@@ -115,8 +113,8 @@ def is_teammate_email(email, commanders):
 
 
 def agent_identity_ids(cfg):
-    """The agent's NOAN identity ids (config agent_identity_ids; the older
-    verity_identity_ids key is still read)."""
+    """The agent's NOAN identity ids (config agent_identity_ids, else
+    verity_identity_ids)."""
     return list(cfg.get("agent_identity_ids") or cfg.get("verity_identity_ids") or [])
 
 
@@ -143,8 +141,8 @@ def save_state_deck(state):
         json.dump(state, f, indent=2)
 
 
-# --- portability (GitHub migration): env-first config + optional Supabase state.
-# With no env set, behavior is exactly the launchd era: config.json + local files.
+# --- portability: env-first config + optional Supabase state.
+# With no env set, the agent reads config.json and keeps state in local files.
 
 def _sb(method, path_q, body=None):
     base = (os.environ.get("SUPABASE_URL") or "").rstrip("/")
@@ -231,7 +229,7 @@ def load_cfg():
     # The endpoint, from the same variable the JS agents read, so one setting moves the whole
     # pack rather than the deck needing its own. NOTE the shapes differ and that is deliberate:
     # ANTHROPIC_BASE_URL is the BARE base (agents/anthropic.mjs appends "/v1/messages"), while
-    # this config key has always carried the version segment and appends only "/messages". So
+    # this config key carries the version segment and appends only "/messages". So
     # the segment is added here rather than the variable being documented two different ways.
     #
     # Not forgiving of a "/v1" already on the variable, on purpose: anthropic.mjs would build
@@ -242,8 +240,7 @@ def load_cfg():
         cfg["anthropic_base"] = base.rstrip("/") + "/v1"
     # A default, because the call sites index this key rather than .get() it, and a tree with no
     # config.json yet has nothing to index — config.defaults.json is on the export's forbidden
-    # list, so in the pack it is absent by design. Before this, the deck raised KeyError on a
-    # fresh checkout instead of saying what was unset. Same default as agents/anthropic.mjs, so
+    # list, so in the pack it is absent by design. Same default as agents/anthropic.mjs, so
     # the two clients agree when nothing is configured as well as when something is.
     cfg.setdefault("anthropic_base", "https://api.anthropic.com/v1")
     return cfg
@@ -347,12 +344,11 @@ def fetch_facts(cfg, slug):
 
 
 def find_tag_id(cfg, name):
-    """Resolve a NOAN tag name to its id. Case-insensitive but LITERAL — there
-    is no POST /tags, so a near-miss resolves to nothing rather than creating
-    anything. Returns None when absent.
+    """Resolve a NOAN tag name to its id. Case-insensitive but LITERAL. It never
+    creates a tag, so a near-miss resolves to nothing. Returns None when absent.
 
     Pages rather than assuming the tag is in the first 100: there is no
-    server-side name filter, and this project is already at ~80 tags. Falling
+    server-side name filter, and a project can carry more than 100 tags. Falling
     off page one would resolve to None and create the follow-up UNTAGGED, which
     no agent would ever claim.
     """
@@ -408,8 +404,7 @@ def arm_followup(cfg, task, contacts, prospect, subject):
     """Queue a follow-up for a deck that actually reached the prospect.
 
     The point: a deck landing in an
-    inbox is one of the strongest buying signals the fleet produces, and until
-    now it generated no next step at all. The follow-up agent is a one-shot
+    inbox is one of the strongest buying signals the fleet produces. The follow-up agent is a one-shot
     sender triggered by tag + assignment, so arming it is just creating the
     task it looks for.
 
@@ -483,8 +478,7 @@ def arm_followup(cfg, task, contacts, prospect, subject):
 
 def note_followup_failure(cfg, task, who, reason):
     """A deck went out but its follow-up did not arm. Leave a trace: the deck
-    task is about to be closed, so without this the gap is invisible — which is
-    the exact failure mode this whole phase exists to remove."""
+    task is about to be closed, so without this the gap is invisible."""
     http("POST", f"{cfg['noan_base']}/notes", noan_headers(cfg), {
         "title": f"[deck] follow-up NOT armed — {who}"[:256],
         "content": (f"The deck for {who} was sent, but the follow-up task could not be armed.\n"
@@ -496,10 +490,10 @@ def note_followup_failure(cfg, task, who, reason):
 
 
 def mark_task_done(cfg, task_id):
-    """Move a task to the Done column once its deck has been emailed for review.
+    """Move a task to the Done column once its deck has gone out: to the prospect,
+    or to the reviewer when direct sending is off or a park could not unassign.
 
-    The ONLY write this job makes to NOAN. `completed` is set alongside `status`
-    so the flag and the board stay consistent.
+    `completed` is set alongside `status` so the flag and the board stay consistent.
     """
     url = f"{cfg['noan_base']}/tasks/{task_id}"
     status, data = http("PATCH", url, noan_headers(cfg),
@@ -510,10 +504,10 @@ def mark_task_done(cfg, task_id):
     return False
 
 
-# ---------- parking (since 2026-09-08) ----------
-# A deck routed to review used to CLOSE the task: the review email to the reviewer had
-# no handler, re-assign cannot revive a done task, and so every guard trip
-# ended with a human forwarding the PDF by hand. Now the task is parked the way
+# ---------- parking ----------
+# A deck routed to review parks the task, never closes it: the review email has
+# no handler and re-assign cannot revive a done task, so a closed one leaves a
+# human forwarding the PDF by hand. The task is parked the way
 # the rest of the fleet parks (general-worker's flagForHuman, demo-worker's
 # reach refusal): needs-human tag + the agent unassigned + the reason in the
 # details, status left in backlog. Unassignment is what stops the scanner
@@ -545,13 +539,15 @@ def strip_park_blocks(details):
 
 def park_block(reason, deck_ref, review_to, when=None, as_is=None, agent=None):
     """The dated line that goes into the task details. `as_is` is None when a
-    comment "send" can ship this exact deck, else the reason it cannot."""
+    comment "send" can ship this exact deck, else the reason it cannot.
+    `review_to` None leaves out the review-copy sentence: a --park-held lane
+    sends no review email of its own (its caller escalates instead)."""
     when = when or datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     agent = agent or os.environ.get("AGENT_NAME") or "Agent"
     send = (f'comment "send" to ship this exact deck with {agent}\'s cover note, or "send: <your text>" to use your words as the cover note; '
             if as_is is None else f'"send" is unavailable ({as_is}); ')
     return (f"{PARK_MARKER} {when}] Not sent to the prospect: {reason}. "
-            f"Deck: {deck_ref}. A review copy went to {review_to}. "
+            f"Deck: {deck_ref}. " + (f"A review copy went to {review_to}. " if review_to else "") +
             f"To act: {send}"
             f'comment "retry" (guidance after it) to rebuild; or add a [Note] and re-assign {agent}. '
             f"{agent} clears {PARK_TAG} on pick-up.")
@@ -573,7 +569,7 @@ def fit_park_details(existing, block, cap=TASK_DETAILS_CAP):
     return f"{base}\n\n{short}" if base else short
 
 
-# Hosting (send-as-is, 2026-09-10): the review copy attached to the reviewer's email
+# Hosting (send-as-is): the review copy attached to the reviewer's email
 # is not enough to send later — the runner's disk is gone by then. Same
 # pattern as sdr-deck-worker's hostDeck: a PRIVATE bucket, a long-lived
 # signed link for humans, and an authenticated download for the send.
@@ -665,10 +661,9 @@ def fetch_hosted_pdf(cfg, obj, dest):
 # "don't send yet" can never match "send".
 # The verb grammar (send / send: <text> / retry / steer) is SHARED with the
 # Node lanes — agents/comment-grammar.json, compiled by comment_grammar.py
-# here and comment-grammar.mjs there. Three hand-copied regexes used to live
-# in this file and drifted from their JS twins: on 2026-09-11 "send as-is"
-# sent a deck but was silently ignored on a parked demo, and "regenerate"
-# rebuilt a demo but was read as guidance here.
+# here and comment-grammar.mjs there. Never hand-copy a verb regex into this
+# file: a copy drifts from its JS twin, and the same comment then means one
+# thing on a parked deck and another on a parked demo.
 # WHO may ask stays local, in teammate_comments below.
 from park_assignees import resolve_park_assignees
 from slack_pointer import notify_park
@@ -688,13 +683,11 @@ def teammate_comments(task, cfg):
     {id, at, email, name, text}. Empty comments dropped.
 
     The JS twin of this is normalizeComments in agents/task-comments.mjs; the
-    live payload shape is documented there. Keep the two in step — on
-    2026-09-18 the API flattened `content` to a plain string and dropped
-    creator.email, createdByAssistant and removedAt, and BOTH copies read the
-    fields that vanished, so the deck lane went as quiet as the general one.
+    live payload shape is documented there. Keep the two in step: a copy that
+    reads a field the payload lacks reads nothing, and its lane goes quiet.
 
     No removedAt filter is needed: soft-deleted comments are not returned at
-    all (confirmed with the API team 2026-09-18).
+    all.
     """
     self_ids = set(agent_identity_ids(cfg))
     cmd = commander_emails()
@@ -702,7 +695,7 @@ def teammate_comments(task, cfg):
     for c in task.get("comments") or []:
         if not c:
             continue
-        # `content` is a plain string since 2026-09-18. Anything else is
+        # `content` is a plain string. Anything else is
         # dropped rather than stringified into a steering channel.
         raw = c.get("content")
         text = raw.strip() if isinstance(raw, str) else ""
@@ -790,7 +783,7 @@ def task_requester_email(task):
     return m.group(1).lower() if m else None
 
 
-def park_task(cfg, task, reason, deck_ref, as_is=None):
+def park_task(cfg, task, reason, deck_ref, as_is=None, review_email=True):
     """Park a deck task for a human instead of closing it. Returns True only if
     the agent was actually unassigned — that is the write that stops the scanner
     rebuilding the deck every run, so the caller falls back to closing the task
@@ -798,7 +791,8 @@ def park_task(cfg, task, reason, deck_ref, as_is=None):
     base = cfg["noan_base"]
     h = noan_headers(cfg)
     tid = task["id"]
-    block = park_block(reason, deck_ref, _required_cfg(cfg, "deck_email_to"), as_is=as_is, agent=agent_name(cfg))
+    review_to = _required_cfg(cfg, "deck_email_to") if review_email else None
+    block = park_block(reason, deck_ref, review_to, as_is=as_is, agent=agent_name(cfg))
     details = fit_park_details(task.get("details") or "", block)
     if details is None:
         log(f"  ! details already at the {TASK_DETAILS_CAP}-char cap — park note not written")
@@ -818,10 +812,9 @@ def park_task(cfg, task, reason, deck_ref, as_is=None):
         log(f"  ! tag '{PARK_TAG}' not found in NOAN — parked task carries no tag")
     verity = set(agent_identity_ids(cfg))
     keep = [a.get("id") for a in (task.get("assignees") or []) if a.get("id") and a.get("id") not in verity]
-    # A park PUTS A HUMAN ON THE TASK. Until 2026-09-11 this wrote `keep`
-    # alone - the assignees minus the agent - which on a task the agent alone held
-    # is the empty set: the deck parked to NOBODY, the exact shape the board
-    # sweep escalates weekly, in the one language the park guard could not see
+    # A park PUTS A HUMAN ON THE TASK. `keep` alone (the assignees minus the
+    # agent) is the empty set on a task the agent alone held, which parks the
+    # deck to NOBODY, the shape the board sweep escalates weekly.
     # The resolver is shared with the Node lanes
     # through agents/config.defaults.env, so "who owns a deck park" is
     # answered in one place: PARK_ASSIGNEES_SALES.
@@ -837,8 +830,7 @@ def park_task(cfg, task, reason, deck_ref, as_is=None):
         log(f"  ! could not unassign {agent_name(cfg)} ({st}): {json.dumps(data)[:150]}")
         return False
     # A task born in a Slack thread is answered IN that thread. The deck is
-    # the lane a Slack user is most likely to delegate to ("make me a deck"),
-    # and it was the one that answered by email.
+    # the lane a Slack user is most likely to delegate to ("make me a deck").
     # Same rule, same wording and the same fail-soft as parkForHuman's
     # notifyParkThread on the Node side.
     told = notify_park(task, reason, agent="deck", assigned=assignee_ids, log=log)
@@ -862,12 +854,11 @@ def clear_park_tag(cfg, task):
     return False
 
 
-# ---------- confidence (2026-09-11) ----------
-# Decks send to the prospect without a human reading them. The exception asked
-# for is "unless confidence is low or information is lacking", and until now
-# there was nothing in this file that could answer either half: every gate was
-# about the ARTEFACT (is the demo slide linked, is a shot stale), none about
-# whether we had enough to say about this prospect in the first place.
+# ---------- confidence ----------
+# Decks send to the prospect without a human reading them, "unless confidence
+# is low or information is lacking". The artefact gates (is the demo slide
+# linked, is a shot stale) can't answer either half, because they say nothing
+# about whether we have enough to say about this prospect.
 #
 # Two signals, deliberately different in kind:
 #   - brief_is_thin()  — deterministic, code-owned. There was provably nothing
@@ -908,10 +899,10 @@ def slide_design_section(text):
     """The `## Slide design` section of a Playbook: its heading line and every line after it
     up to the next `## ` heading (a `### ` subheading stays inside). None when there is none.
 
-    A line scan, not a regex. The regex this replaces, `(?:.*\\n?)*?` under a lookahead, had
-    nested quantifiers that can each match the same text, so a long enough fact made it
-    backtrack exponentially (CodeQL py/redos) — a hung deck run from one bad edit to a fact.
-    Same answers as that regex, including None for a heading with no newline after it."""
+    A line scan, never a regex like `(?:.*\\n?)*?` under a lookahead: its nested quantifiers
+    can each match the same text, so a long enough fact backtracks exponentially (CodeQL
+    py/redos) and one bad edit to a fact hangs the deck run.
+    Returns None for a heading with no newline after it."""
     lines = text.split("\n")   # "\n" only, as the regex's ^ and . saw lines — not splitlines()
     start = next((i for i, l in enumerate(lines) if l.startswith("## Slide design")), None)
     if start is None or start == len(lines) - 1:   # no newline after the heading
@@ -926,15 +917,53 @@ You decide whether this deck is safe to send to the prospect WITHOUT a human rea
 
 Declare LOW when any of these is true:
 
-- The brief gives you nothing specific about THIS prospect's business, so the deck could have been written for anyone in the ICP.
-- You had to guess at what they do, what they want, or why they are talking to you.
-- The brief implies a conversation, commitment, or context you cannot see, so the deck risks referring to something that did not happen.
-- Anything you would need to state about the company to make the argument land is absent from the value facts, and you found yourself reaching.
-- The brief looks like a test record, a placeholder, or an internal note rather than a real prospect.
+- `no-specifics`: The brief gives you nothing specific about THIS prospect's business, so the deck could have been written for anyone.
+- `guessed`: You had to guess at what they do, what they want, or why they are talking to you.
+- `unclear-purpose`: You cannot tell who the deck is for or what it is meant to do: for example, whether to sell the company to the person who asked or to help them with another company they work with or invest in.
+- `unseen-context`: The brief implies a conversation, commitment, or context you cannot see, so the deck risks referring to something that did not happen.
+- `missing-value-facts`: Anything you would need to state about the company to make the argument land is absent from the value facts, and you found yourself reaching.
+- `test-record`: The brief looks like a test record, a placeholder, or an internal note rather than a real prospect.
+
+These are NEVER grounds for low, whatever the ideal-customer facts say:
+
+- Who they are: their industry, size or stage, or that they sit outside the ideal customer profile or match an anti-ICP description. Every deck was asked for, and anyone can be a customer. The ideal-customer facts choose the angle, never whether they get a deck.
+- That there were no meeting notes, when their request and their site tell you what they do.
+- A general wish for a human to sanity-check fit or tone.
+
+If every reason you have is on this list, declare HIGH. A low must name one ground from the LOW list above in low_ground; a low that names none of them is not a decline and the deck sends.
 
 Declare HIGH when the brief (plus any customer history) gives you at least one concrete, specific thing about their business to build the argument on, and every claim about the company rests on the value facts.
 
 Write the best deck you can BEFORE deciding confidence, never a placeholder: a low-confidence deck is stored and shown to a human, who usually sends it with a small edit. When you declare low, why_low must say in one or two sentences what specifically was missing. That text is read by a colleague and never by the prospect."""
+
+
+LOW_GROUND_RX = re.compile(r"^- `([a-z][a-z0-9-]*)`:", re.M)
+
+
+def low_grounds(rules):
+    """The ids of the LOW grounds a rules text lists (`- `id`: ...` bullets).
+    Empty for rules that carry no ids (an older fact), in which case a low
+    needs no named ground, exactly as before."""
+    return set(LOW_GROUND_RX.findall(rules or ""))
+
+
+def judge_low(declared, low_ground, grounds):
+    """Does a declared low count as a decline? Returns (counts, note).
+
+    A low must name one of the listed grounds once the rules list any. This is
+    the backstop for grounds the rules forbid (who the prospect is, ICP fit):
+    replaying the deck that prompted the rule, the model
+    still declared low "outside the ICP" on half the builds with the
+    never-grounds list in its prompt. With no slot to put that reason in, the
+    low does not hold the deck; the reason is still logged and reported."""
+    if declared != "low":
+        return False, None
+    if not grounds:
+        return True, None
+    g = str(low_ground or "").strip().lower().strip("`")
+    if g in grounds:
+        return True, None
+    return False, f"low declared without a listed ground ({g or 'none named'}); not a decline"
 
 
 def load_confidence_rules(cfg):
@@ -942,9 +971,7 @@ def load_confidence_rules(cfg):
 
     Mirrors load_playbook's fail-soft contract: any NOAN blip falls back to the
     built-in CONFIDENCE_RULES rather than changing what the model is asked. The
-    `config` slug has been in deck_fact_slugs since the Config fact was seeded
-    but was never read by this file — the fact was documentation only. This is
-    the first thing that reads it, so the section heading is now load-bearing:
+    section heading is load-bearing (the `config` slug in deck_fact_slugs):
     the fact must keep a "## Confidence rules" heading, and that section must
     stay addressed to the model, because it is injected verbatim. The fact's
     separate "## Confidence" section is the human-facing half and is NOT sent
@@ -988,8 +1015,7 @@ def brief_is_thin(task_title, details, guidance=None, history=None):
     Pure and exported for testing: this is the "information lacking" half of
     the sales lead's exception and it must be decidable without standing up a task.
 
-    Deliberately narrow. Measured 2026-09-11: 11 of the first 12 contacts on
-    the board carry one memo or none, and the richest carries 8 — so a gate
+    Deliberately narrow. Most contacts carry one memo or none, so a gate
     that demanded memo history would park nearly every deck and the exception
     would swallow the rule. A deck is thin only when the brief says nothing
     beyond the title AND no colleague added guidance AND there is no customer
@@ -1046,17 +1072,17 @@ def build_prompt(customer_ctx, design_system, visual, value_facts, shots=None,
 - Reference a shot with EXACTLY `<img src="SHOT:<id>" alt="...">` using an id from the list above. The build step swaps it for the real image. NEVER invent an id, never use a URL or file path, never use a placeholder service.
 {demo_shot_rule}- **Use the other shots SPARINGLY: at most 2 in the ENTIRE deck, and 1 per slide.** A deck with no shots beyond the demo slide is acceptable if none genuinely earn their place. Pick the shot(s) whose subject matches that slide's argument.
 - Apart from the demo slide, shots are ONLY allowed on the "what {C} is" or "how it works for them" slides. NEVER on the cover, the proof/quote slide, the pricing slide, or the final CTA slide.
-- Most shots are LIGHT-MODE UI on a dark deck (the `demo-player` shot is dark with its own gradient frame). Either way they must be CONTAINED, never full-bleed: place each inside a card using the elevated surface, hairline border and card radius from the slide design rules — sized to at most ~55% of the slide width, sitting in its own column/zone beside the text.
+- The shots are DARK-MODE UI (the `demo-player` shot also carries its own framed panel). They must be CONTAINED, never full-bleed: place each inside a card using the elevated surface, hairline border and card radius from the slide design rules — sized to at most ~55% of the slide width, sitting in its own column/zone beside the text.
 - The shot occupies its own zone inside the CONTENT block — it must never overlap the headline, body text, or the footer. The card must stay fully inside the content block: `max-height:100%; min-height:0;` on the card and `display:block; width:100%; max-height:100%; height:auto; object-fit:contain;` on the `<img>`. If the shot would be taller than its zone, it must SHRINK — never extend toward the bottom edge of the slide.
 - Vertically CENTRE the shot card within the content block (e.g. `align-items:center` on the row) rather than letting it hang low. It should sit visually balanced against the text column, with clear space between its bottom edge and the footer.
-- Do not add fake browser chrome or device frames around them; the screenshots already include a browser window.
+- Do not add fake browser chrome or device frames around them; the contained card is their frame.
 """
     else:
         shots_block = ""
-    # 2026-08-12: the SDR path hands off a deck request with no meeting behind
-    # it at all — a prospect replying "yes" to the agent's cold email. The default
-    # opener below is correct for the tool's original case (a real sales call
-    # already happened) but would bias a cold-origin deck toward
+    # The SDR path hands off a deck request with no meeting behind it at all:
+    # a prospect replying "yes" to the agent's cold email. The default
+    # opener below is correct when a real sales call already happened,
+    # but would bias a cold-origin deck toward
     # meeting-reflective language ("great chatting", "as discussed") for a
     # relationship that is, so far, entirely written. There is already a guard
     # against fabricating specific meeting details from customer history; this
@@ -1084,7 +1110,7 @@ A slide inviting the prospect to watch the {C} demo, placed right after "how it 
         demo_never = ""
     allowed_urls = [u for u in (subscribe_url, demo_url) if u]
     if subscribe_url:
-        cta_rule = (f"- CTA LINKS: the subscribe / start-trial / join CTA MUST be a real clickable hyperlink to **{subscribe_url}** — wrap it as `<a href=\"{subscribe_url}\">`, styled as the primary button from the slide design rules (its colours and radius; `text-decoration:none; display:inline-block`). This applies to EVERY subscribe-flavoured CTA anywhere in the deck (cover, pricing slide, final slide) — whatever its label (\"Subscribe\", \"Start your free trial\", \"Subscribe & start onboarding\", \"Get started\"). Chrome's print-to-PDF preserves it, so the prospect can click it in the PDF. Never use a bare <button>, a plain <div>, or a `#` href for a subscribe CTA."
+        cta_rule = (f"- CTA LINKS: the subscribe / sign-up / join CTA MUST be a real clickable hyperlink to **{subscribe_url}** — wrap it as `<a href=\"{subscribe_url}\">`, styled as the primary button from the slide design rules (its colours and radius; `text-decoration:none; display:inline-block`). This applies to EVERY subscribe-flavoured CTA anywhere in the deck (cover, pricing slide, final slide) — whatever its label (\"Subscribe\", \"Start your free trial\", \"Subscribe & start onboarding\", \"Get started\"). Chrome's print-to-PDF preserves it, so the prospect can click it in the PDF. Never use a bare <button>, a plain <div>, or a `#` href for a subscribe CTA."
                     + (f" The demo slide's \"Watch the demo\" CTA links to **{demo_url}** the same way." if demo_url else ""))
     else:
         cta_rule = ("- CTA LINKS: no subscribe URL is configured, so subscribe-flavoured CTAs stay as unlinked text styled as the primary button."
@@ -1172,7 +1198,7 @@ Merge or add a slide only if the arc needs it — {demo_never}Every factual clai
 # RETURN (read carefully — do NOT wrap the HTML in JSON)
 Return the COMPLETE HTML document and nothing else. No prose, no markdown fence.
 The VERY FIRST line must be a single HTML comment carrying small metadata (no HTML inside it), exactly this shape:
-<!--DECK_META {{"deck_title":"...","prospect":"...","slides":["slide 1 summary","slide 2 summary","..."],"confidence":"high","why_low":""}}-->
+<!--DECK_META {{"deck_title":"...","prospect":"...","slides":["slide 1 summary","slide 2 summary","..."],"confidence":"high","low_ground":"","why_low":""}}-->
 Then, starting on the next line, the full `<!DOCTYPE html>` document with all slides.
 The metadata JSON must be valid and on ONE line. Everything after the comment is the raw HTML."""
 
@@ -1202,7 +1228,7 @@ def parse_deck(text):
 
     The model returns a leading `<!--DECK_META {json}-->` comment (small, no HTML
     inside → parses reliably) followed by the raw HTML document. We do NOT try to
-    JSON-decode the HTML itself — that was the fragile part.
+    JSON-decode the HTML itself, which is fragile.
     """
     t = text.strip()
     if t.startswith("```"):
@@ -1446,8 +1472,8 @@ def slugify(s):
     return s[:60] or "deck"
 
 
-# ---------- direct-to-customer send (2026-07-24) ----------
-# [deck] tasks now email the deck straight to the linked contact with a natural
+# ---------- direct-to-customer send ----------
+# [deck] tasks email the deck straight to the linked contact with a natural
 # cover note drafted by the agent. The review email remains the fallback:
 # no resolvable contact email, quality warnings/stale shots, or a cover note
 # that trips the guards all route back to review instead of a bad customer send.
@@ -1475,8 +1501,7 @@ def resolve_contacts(cfg, task):
 
 def _link_host(url):
     """Hostname for an allow-list comparison: lower-cased, a leading "www." dropped.
-    example.com and www.example.com are one site; treating them as two is what
-    parked three decks in nine days (2026-10-01 to 2026-10-09)."""
+    example.com and www.example.com are one site; treating them as two parks good decks."""
     h = (urllib.parse.urlparse(url).hostname or "").lower()
     return h[4:] if h.startswith("www.") else h
 
@@ -1539,9 +1564,9 @@ def draft_cover_note(cfg, contacts, deck_title, slides, history, playbook=None):
             "rides in on, plus a subject line.\n\n"
             f"{playbook}\n\n"
             # The fact may name the permitted link in words ("the company site"); the guard
-            # below checks a HOST. The model wrote a reasonable variant of the site
-            # address that was not the configured one, three times in nine days, and
-            # each one parked a deck. So the exact URL is stated whatever the fact says.
+            # below checks a HOST, and a reasonable variant of the site address that is
+            # not the configured one parks the deck. So the exact URL is stated whatever
+            # the fact says.
             f"{link_rule}"
             f"Open with 'Hi {first},'.\n"
             "Return EXACTLY this format:\nSUBJECT: <subject>\n\n<email body>"
@@ -1574,8 +1599,7 @@ def draft_cover_note(cfg, contacts, deck_title, slides, history, playbook=None):
     subject = re.sub(r"\s*[—―]\s*", " - ", subject)[:80]
     foreign = foreign_link_hosts(note, [cfg.get("subscribe_url"), cfg.get("demo_url")])
     if foreign:
-        # Name the host: "a link outside the configured URLs" was the whole record
-        # for three parks, and which link it was had to be guessed.
+        # Name the host, so the park record says which link tripped the guard.
         log(f"  ! cover note contains a link outside the configured URLs ({', '.join(foreign)}); falling back to review email")
         return None
     if len(note) > 1200 or len(note.split()) > 160:
@@ -1590,11 +1614,14 @@ def draft_cover_note(cfg, contacts, deck_title, slides, history, playbook=None):
     return subject, note
 
 
-def send_deck_to_customer(cfg, contacts, subject, note, prospect, pdf_path, idempotency_key=None):
+def send_deck_to_customer(cfg, contacts, subject, note, prospect, pdf_path, idempotency_key=None,
+                          in_reply_to=None):
     """Send the deck straight to the contact(s) with the agent's cover note.
     Returns True on 2xx. Test redirect via cfg['deck_test_recipient'].
     `idempotency_key` goes to Resend as Idempotency-Key (the comment-approved
-    send passes one, so a retried run cannot ship the same approval twice)."""
+    send passes one, so a retried run cannot ship the same approval twice).
+    `in_reply_to` threads the send under the prospect's own message (a parked
+    re-engagement deck: they said yes in a thread and the deck answers it)."""
     key = cfg.get("resend_api_key")
     if not key or not pdf_path or not os.path.exists(pdf_path):
         return False
@@ -1619,13 +1646,15 @@ def send_deck_to_customer(cfg, contacts, subject, note, prospect, pdf_path, idem
         "attachments": [{"filename": f"{company_name(cfg)} - {prospect}.pdf".replace("/", "-"),
                          "content": pdf_b64}],
     }
-    # No CC by default (2026-07-24) — set cfg deck_email_cc to add one.
+    # No CC by default. Set cfg deck_email_cc to add one.
     cc = cfg.get("deck_email_cc")
     if cc and not test:
         body["cc"] = [cc]
     reply_to = cfg.get("deck_reply_to") or os.environ.get("REPLY_TO") or ""
     if reply_to:
         body["reply_to"] = [reply_to]
+    if in_reply_to:
+        body["headers"] = {"In-Reply-To": in_reply_to, "References": in_reply_to}
     headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
     if idempotency_key:
         headers["Idempotency-Key"] = idempotency_key
@@ -1648,7 +1677,7 @@ def memo_customer_send(cfg, contact, subject, note, prospect, via=None):
         log(f"  ! contact memo failed ({st})")
 
 
-# ---------- working a parked task from its comments (2026-09-10) ----------
+# ---------- working a parked task from its comments ----------
 
 def append_detail_line(cfg, task, line):
     """Add one line to the task details (fail-soft, respects the cap). Used
@@ -1714,11 +1743,17 @@ def send_as_is(cfg, task, rec, override_text, comment, state):
         if not cover:
             return refuse('the cover note tripped a guard; comment "send: <your cover text>" to supply it')
         subject, note = cover
+    # A parked re-engagement deck answers the prospect's own "yes": it goes in
+    # that thread, under its subject, rather than as a new email.
+    thread = rec.get("thread") or {}
+    if thread.get("subject"):
+        subject = thread["subject"]
 
     rec["sending"], rec["sending_at"] = comment["id"], stamp     # intent FIRST
     save_state_deck(state)
     ok = send_deck_to_customer(cfg, contacts, subject, note, prospect, pdf,
-                               idempotency_key=f"deck-as-is:{tid}:{comment['id']}")
+                               idempotency_key=f"deck-as-is:{tid}:{comment['id']}",
+                               in_reply_to=thread.get("message_id"))
     if not ok:
         rec.pop("sending", None)
         rec["send_failed_at"] = stamp
@@ -1803,7 +1838,7 @@ def parked_pass(cfg, state, backlog_tasks, today, send_email, dry=False):
         if dry:
             log(f"  [parked] {t['title']}: {len(new)} new comment(s) → {action[0] if action else 'guidance only'}")
             continue
-        if rec is None:                             # parked before the ledger record existed
+        if rec is None:                             # a park with no ledger record
             rec = recs[t["id"]] = {"at": since, "handled_comments": []}
         rec["handled_comments"] = sorted(handled | {c["id"] for c in new if c["id"]})[-50:]
         save_state_deck(state)
@@ -1865,8 +1900,7 @@ def load_facts(cfg):
 
 
 def fetch_contact_context(cfg, task):
-    """Contact history for personalization (readable via the API since
-    2026-07-24): resolve the contact from the task's linked contacts or a
+    """Contact history for personalization: resolve the contact from the task's linked contacts or a
     'Contact ID: <uuid>' details line, then pull their memos (meeting
     summaries, past agent emails). Internal-only context: the prompt
     instructs the model never to quote or reveal it. Fail-soft."""
@@ -1888,12 +1922,10 @@ def fetch_contact_context(cfg, task):
                           for r in (contact.get("companyRoles") or []))
         parts.append(f"Contact: {contact['name']}" + (f" ({roles})" if roles else ""))
     notes = contact.get("notes") or []
-    # The API returns notes/memos NEWEST FIRST (verified live 2026-09-11 against
-    # a contact with 8 of them; `notes` mirrors `memos` exactly, same order).
-    # This was `notes[-5:][::-1]`, a TAIL slice, so on any contact with more
-    # than five it fed the deck the OLDEST five and silently dropped the most
-    # recent — the meeting that just happened, the reply they just sent. Take
-    # the head. Same slice bug as agents/contact-memos.mjs's (fixed there).
+    # The API returns notes/memos NEWEST FIRST (`notes` mirrors `memos` exactly,
+    # same order). Take the head: a tail slice feeds the deck the OLDEST five
+    # and drops the most recent, the meeting that just happened and the reply
+    # they just sent. agents/contact-memos.mjs follows the same rule.
     for n in notes[:5]:
         parts.append(str(n)[:1000])
     if not parts:
@@ -1906,8 +1938,16 @@ def fetch_contact_context(cfg, task):
     )[:6000]
 
 
-def process_task(cfg, task, today, design_system, visual, value_facts, send_email=True):
-    """Generate a deck for one task: build → render PDF → Drive → send, park or review. Returns summary."""
+def process_task(cfg, task, today, design_system, visual, value_facts, send_email=True,
+                 park_held=False, thread=None):
+    """Generate a deck for one task: build → render PDF → Drive → send, park or review. Returns summary.
+
+    `park_held` is for a lane that runs this with --no-email and owns the send
+    (the re-engagement reply): when the verdict blocks the send, the deck is
+    hosted and the task parked here, exactly as a parked [deck] task, so the
+    file outlives the runner and "send" / "retry" comments work on it.
+    `thread` ({message_id, subject}) is the prospect's email a later "send"
+    replies to."""
     # Earlier park blocks are stripped: the brief and any human [Note] steer
     # the build, the previous failure report does not. Teammate comments are
     # read as guidance the same way — that is how "retry: use the pricing
@@ -1966,22 +2006,26 @@ def process_task(cfg, task, today, design_system, visual, value_facts, send_emai
     for w in warnings:
         log(f"  ! {w}")
 
-    # ---- confidence verdict (2026-09-11) ----
-    # Computed on EVERY run and reported whether or not the gate is enforcing,
-    # so the rollout can read real verdicts before they start parking decks.
+    # ---- confidence verdict ----
+    # Computed on EVERY run and reported whether or not the gate is enforcing.
     gate_on = bool(cfg.get("deck_confidence_gate", False))
     declared = str(meta.get("confidence") or "").strip().lower()
     why_low = str(meta.get("why_low") or "").strip()
+    low_ground = str(meta.get("low_ground") or "").strip()
+    low_counts, overruled = judge_low(declared, low_ground, low_grounds(confidence_rules))
+    if overruled:
+        log(f"  confidence: {overruled} — {why_low or '(no why_low)'}")
     confidence_reason = None
     thin = brief_is_thin(task.get("title"), task.get("details"), guidance, history)
     if thin:
         confidence_reason = thin
-    elif declared == "low":
+    elif low_counts:
         # Only an explicit "low" counts; see the fail-direction note on
-        # CONFIDENCE_RULES. An empty why_low is still a decline, but say so —
-        # the reengage lesson was that an unexplained decline is unreviewable.
+        # CONFIDENCE_RULES. An empty why_low is still a decline, but say so:
+        # an unexplained decline is unreviewable.
         confidence_reason = "the deck agent declared low confidence: " + (
-            why_low or "no reason given (confidence low with why_low empty)")
+            (f"[{low_ground}] " if low_ground else "") +
+            (why_low or "no reason given (confidence low with why_low empty)"))
     if not declared:
         log("  confidence: not declared by the model (treated as high — omission is not a decline)")
     else:
@@ -2008,10 +2052,9 @@ def process_task(cfg, task, today, design_system, visual, value_facts, send_emai
     pdf_path = render_pdf(cfg, os.path.join(out_dir, "deck.html"),
                           os.path.join(out_dir, "deck.pdf"))
     dest = deliver_to_drive(cfg, out_dir, today, slug)
-    # Autonomous delivery (2026-07-27, superseding the 2026-07-24 single-
-    # contact rule): clean deck + ANY resolvable contact emails → the agent's cover
+    # Autonomous delivery: clean deck + ANY resolvable contact emails → the agent's cover
     # note straight to the customer(s). Multi-attendee meeting tasks go to every
-    # linked contact, reply-all style — they no longer fall back to the reviewer. The
+    # linked contact, reply-all style, not to the reviewer. The
     # review email remains ONLY for decks that should not reach a customer
     # unreviewed (quality warnings, stale shots, guard-tripped cover note) or
     # that have no resolvable recipient at all.
@@ -2025,6 +2068,8 @@ def process_task(cfg, task, today, design_system, visual, value_facts, send_emai
     # intended path there, and closing on the review email is still right).
     review_reason = None
     contacts, cover, hosted_obj, hosted_url, as_is = [], None, None, None, None
+    verdict_clean = not warnings and not stale_used and not (bool(confidence_reason) and gate_on)
+    held_park = False
     if send_email:
         contacts = resolve_contacts(cfg, task)
         # The confidence verdict joins the artefact gates only when enforcing;
@@ -2091,6 +2136,32 @@ def process_task(cfg, task, today, design_system, visual, value_facts, send_emai
                                         warnings + ([confidence_reason] if blocked_by_confidence else []),
                                         parked=will_park, link=hosted_url, cover=cover,
                                         as_is=as_is, recipients=[c["email"] for c in contacts])
+    elif park_held and not verdict_clean and cfg.get("deck_park_on_review", True):
+        # A --no-email lane's held deck. Without this the only copy is on the
+        # CI runner, which is wiped when the job ends, and the task has no
+        # way back but a human rebuilding it by hand. No review email: the
+        # calling lane escalates, carrying the link printed as DECK_PARKED.
+        problems = list(warnings) + [f"stale product shot {s['id']}" for s in stale_used]
+        if not problems:
+            review_reason = confidence_reason
+        else:
+            if confidence_reason and gate_on:
+                problems.append(confidence_reason)
+            review_reason = "the deck is not clean (" + "; ".join(problems) + ")"
+        held_park = True
+        contacts = resolve_contacts(cfg, task)
+        hosted_obj, hosted_url = host_pdf(cfg, pdf_path, slug)
+        if contacts:
+            cover = draft_cover_note(cfg, contacts, meta.get("deck_title", default_title),
+                                     slides, history, load_playbook(cfg))
+        if not hosted_obj:
+            as_is = "this deck could not be stored; use retry"
+        elif not contacts:
+            as_is = "no contact with an email is linked to the task; link one, then comment send"
+        elif cover is None:
+            as_is = 'the cover note tripped a guard; comment "send: <your cover text>" to supply it'
+        log(f"  held ({review_reason}) — parking for a human, deck "
+            f"{'hosted' if hosted_obj else 'NOT hosted'}")
 
     # Close or park — ONLY once an email (customer or review) actually went
     # out. If the send failed the task stays put, so nothing is silently
@@ -2101,7 +2172,7 @@ def process_task(cfg, task, today, design_system, visual, value_facts, send_emai
     # A park that could not unassign the agent falls back to closing, since an
     # open task still assigned would be rebuilt on every scan.
     moved, parked, park_record = False, False, None
-    if emailed and review_reason and cfg.get("deck_park_on_review", True):
+    if (emailed or held_park) and review_reason and cfg.get("deck_park_on_review", True):
         try:
             # The record a later comment "send" works from: where the exact
             # file is, who it goes to, and the cover note it would carry.
@@ -2111,22 +2182,26 @@ def process_task(cfg, task, today, design_system, visual, value_facts, send_emai
                            "cover": list(cover) if cover else None,
                            "contact_ids": [c["id"] for c in contacts], "reason": review_reason,
                            "handled_comments": []}
+            if thread and thread.get("message_id"):
+                park_record["thread"] = {"message_id": thread["message_id"],
+                                         "subject": thread.get("subject") or None}
             parked = park_task(cfg, task, review_reason,
-                               hosted_url or dest or "PDF attached to the review email", as_is=as_is)
+                               hosted_url or dest or ("not stored" if held_park else "PDF attached to the review email"),
+                               as_is=as_is, review_email=not held_park)
         except Exception as e:                      # http() raises after retries
             log(f"  ! park raised: {e}")
         if not parked:
             park_record = None
-            if cfg.get("mark_done_after_send", True):
+            # A held deck's task belongs to the calling lane, which escalates
+            # and leaves it as it is; closing it would hide that nothing went.
+            if cfg.get("mark_done_after_send", True) and not held_park:
                 log("  ! park failed — closing the task as before so it is not rebuilt every scan")
                 moved = mark_task_done(cfg, task["id"])
     elif emailed and cfg.get("mark_done_after_send", True):
         moved = mark_task_done(cfg, task["id"])
 
     # Follow-up: a deck that actually reached the
-    # prospect arms a follow-up. Before this, the strongest buying signal the
-    # fleet produces generated no next step at all — the chain simply ended in
-    # an inbox. Armed after the task is closed so a failure here cannot leave
+    # prospect arms a follow-up. Armed after the task is closed so a failure here cannot leave
     # the deck task open and get the deck rebuilt.
     followup_id = None
     if sent_to_customer and cfg.get("deck_arm_followup", True):
@@ -2147,16 +2222,19 @@ def process_task(cfg, task, today, design_system, visual, value_facts, send_emai
             "sent_to_customer": sent_to_customer, "followup_task": followup_id,
             "shots_used": shots_used, "moved_to_done": moved, "parked": parked,
             "review_reason": review_reason, "park_record": park_record,
+            "held_park": held_park, "link": hosted_url, "as_is": as_is,
+            "cover": list(cover) if cover else None,
             # The verdict, for the lanes that run this with --no-email and own
             # the send themselves (sdr-deck-worker.mjs, reengage-reply.mjs).
-            # Those lanes discarded every quality finding this function makes
-            # until 2026-09-11, so a stale-shot deck reached the coldest
-            # audience there is with no gate at all.
-            "verdict": {"clean": not warnings and not stale_used and not (bool(confidence_reason) and gate_on),
+            # Those lanes must gate on it: without it a stale-shot deck reaches
+            # the coldest audience there is with no gate at all.
+            "verdict": {"clean": verdict_clean,
                         "gate": gate_on,
                         "warnings": list(warnings),
                         "stale_shots": [s["id"] for s in stale_used],
                         "confidence": declared or None,
+                        "low_ground": low_ground or None,
+                        "low_overruled": (why_low or overruled) if overruled else None,
                         "confidence_reason": confidence_reason}}
 
 
@@ -2170,6 +2248,11 @@ def main():
                    help="scan backlog tasks tagged Deck + assigned to the agent and process new ones")
     ap.add_argument("--dry", action="store_true", help="show what would run, no generation")
     ap.add_argument("--no-email", action="store_true", help="generate but do not send the review email")
+    ap.add_argument("--park-held", action="store_true",
+                    help="with --no-email: a deck the verdict holds is hosted and its task parked "
+                         "(send / retry comments work on it); prints DECK_PARKED=")
+    ap.add_argument("--reply-message-id", help="the prospect's Message-ID a later 'send' replies to")
+    ap.add_argument("--reply-subject", help="the subject of that thread (with Re:)")
     args = ap.parse_args()
 
     cfg = load_cfg()
@@ -2180,12 +2263,12 @@ def main():
     send_email = not args.no_email
 
     # ----- scan mode: tag+assignee-triggered batch with dedup -----
-    # Since 2026-07-24 GET /tasks embeds tags[] and assignees[]: the trigger is
+    # GET /tasks embeds tags[] and assignees[]: the trigger is
     # the "Deck" tag + the agent among the assignees, on BACKLOG tasks only.
     # Backlog-only matters: reply-worker's auto-deck path creates its
     # Deck-tagged, the agent-assigned tasks as in-progress (and with a
     # reengage-deck: externalId, excluded as a second guard) so this scanner
-    # never double-builds them. Done tasks are skipped as before — the board
+    # never double-builds them. Done tasks are skipped too: the board
     # is a second dedup source alongside the local ledger.
     if args.scan:
         trigger_tag = (cfg.get("deck_trigger_tag") or "Deck").lower()
@@ -2202,7 +2285,11 @@ def main():
                 if t.get("status") != "backlog" or t.get("completed"):
                     continue
                 backlog.append(t)
-                if str(t.get("externalId") or "").startswith("reengage-deck:"):
+                # A re-engagement deck is the reply lane's until it parks: from
+                # then on it is worked like any parked deck, so a re-assign
+                # rebuilds it.
+                if (str(t.get("externalId") or "").startswith("reengage-deck:")
+                        and PARK_MARKER not in (t.get("details") or "")):
                     continue
                 # SDR-sourced decks are delivered by sdr-deck-worker.mjs, which
                 # replies INSIDE the original Smartlead thread from the lookalike
@@ -2268,7 +2355,10 @@ def main():
         for name, txt in value_facts:
             print(f"  {name}: {len(txt)} chars")
         return
-    r = process_task(cfg, task, today, design_system, visual, value_facts, send_email)
+    thread = ({"message_id": args.reply_message_id, "subject": args.reply_subject}
+              if args.reply_message_id else None)
+    r = process_task(cfg, task, today, design_system, visual, value_facts, send_email,
+                     park_held=args.park_held, thread=thread)
     if r and r.get("parked") and r.get("park_record"):
         # The record a later comment "send" needs lives in the same ledger the
         # scan uses, whichever backend is configured.
@@ -2280,6 +2370,12 @@ def main():
     # line-by-line has the verdict in hand by the time it has the file.
     if r and r.get("verdict"):
         print(f"DECK_VERDICT={json.dumps(r['verdict'], separators=(',', ':'))}", flush=True)
+    if r and r.get("held_park"):
+        # What the calling lane's escalation needs: whether the task is
+        # parked, the hosted link, and the cover a "send" would carry.
+        print("DECK_PARKED=" + json.dumps({"parked": bool(r.get("parked")), "link": r.get("link"),
+                                            "as_is": r.get("as_is"), "cover": r.get("cover")},
+                                           separators=(",", ":")), flush=True)
     if r and r.get("pdf"):
         print(f"PDF_PATH={r['pdf']}", flush=True)
     log("=== done ===")

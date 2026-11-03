@@ -1,56 +1,33 @@
 /**
- * Task comments as a steering channel (added 2026-09-08). Read side only.
+ * Task comments as a steering channel. Read side only. Pure: no network, no
+ * state. The worker owns the cursor (its journal's `commentCursor`, an ISO
+ * createdAt) and passes the task it fetched.
  *
- * Every task from GET /tasks carries a `comments` array, but until this module
- * nothing in the fleet read it. A teammate commenting "approved, go ahead" on a
- * task the agent was waiting on got silence; the general worker woke only on a
- * description diff.
+ * A comment from GET /tasks is exactly { id, content: "<string>", createdAt,
+ * creator: { id, name, email } }. Build nothing that expects other fields
+ * (content.plainText, createdByAssistant, removedAt and the rest): they are
+ * gone for good.
  *
- * The live shape, verified 2026-09-18 against a comment posted through the
- * write route:
+ * Each comment is one of three kinds, decided in code, never by the model:
+ *   teammate: creator is a commander or on the teammate domain. It steers: it
+ *             wakes a waiting task and counts as the requester's own words for
+ *             the code-verified approval gates.
+ *   self:     creator.id is one of the agent's identities, or the text carries
+ *             the agent marker (agent-comment.mjs). Never steering, so the
+ *             agent's own status comments cannot wake it.
+ *   external: anyone else with board access. Logged and dropped, never shown
+ *             to the model: a comment is an injection surface.
+ * A comment relayed from Slack belongs to its verified speaker, never to the
+ * key owner; unverified, it belongs to nobody (slack-relayed.mjs).
  *
- *   { id, content: "<string>", createdAt, creator: { id, name } }
- *
- * That is the whole record. The API narrowed it on 2026-09-18, when
- * POST /tasks/{taskId}/comments shipped: the previous payload was exposing the
- * provider's own DB schema, so the narrowing is DELIBERATE AND PERMANENT —
- * build nothing that expects these back. Gone: content.{title,bucket,plainText,
- * provenance} (now a bare string), createdByAssistant, createdByApiKeyId,
- * removedAt, private, updatedAt, tagIds.
- *
- * `creator.email` went with them and is being restored separately (confirmed by
- * the API team 2026-09-18). This module reads it whenever present, so teammate
- * classification resumes on their deploy with no change here. Until then every
- * comment lacking an address is dropped as external and logged — see
- * UNCLASSIFIED below. That is the fail-closed direction: work stalls, nothing
- * mis-fires.
- *
- * Three kinds, decided in code, never by the model:
- *   teammate — creator is a commander or on the teammate domain: STEERING. Wakes a
- *              waiting task and counts as the requester's own words for the
- *              code-verified approval gates (the address is API-verified, and
- *              a comment is never model-authored).
- *   self     — creator.id is one of the agent's identities: never steering, so
- *              the agent's own status comments cannot wake it (the descSnapshot
- *              dance exists for exactly this reason on the description side).
- *              Since 2026-09-18 creator.id is the ONLY signal — createdByAssistant
- *              is gone, and a comment written with an API key is attributed to
- *              the KEY'S OWNER, not to a bot. So if the agent's key is ever a
- *              human's, its own comments read back as that human's instruction
- *              and reach the approval gates. Nothing in the payload can catch
- *              that; the writing identity is asserted at startup instead.
- *   external — anyone else with board access: logged and dropped. A comment
- *              is a new injection surface for whoever can see the board, so an
- *              external one never reaches the model.
- *
- * Deletion is handled server-side: soft-deleted comments are not returned at
- * all (confirmed with the API team 2026-09-18), which is why removedAt going
- * from the payload costs nothing and why there is no client-side filter for it.
- * A retracted comment simply never arrives.
- * Edits do not re-wake; only a new comment does — cursor is on createdAt.
- *
- * Pure: no network, no state. The worker owns the cursor (its journal's
- * `commentCursor`, an ISO createdAt) and passes the task it fetched.
+ * A comment is attributed to the OWNER of the key that posted it, with no agent
+ * flag in the payload. An agent comment without the marker, posted with a
+ * person's key, reads back as that person's instruction and reaches the
+ * approval gates. The marker and assertAgentIdentity (noan.mjs) guard this.
+ * A comment with no creator.email is dropped as external and logged as
+ * UNCLASSIFIED. That is the fail-closed direction: work stalls, nothing fires.
+ * Soft-deleted comments never arrive, so there is no client-side filter.
+ * Edits do not re-wake; only a new comment does, since the cursor is createdAt.
  */
 
 import { verityIds } from "./noan.mjs";
@@ -75,16 +52,13 @@ function isTeammate(email, commanders) {
 
 /** A comment's text, whichever shape it arrives in.
  *
- *  Raw from GET /tasks, `content` is a plain string (since 2026-09-18 — it was
- *  an object with a `plainText` field before, and reading that field is what
- *  silently emptied every comment in the fleet the day the API narrowed).
- *  Already normalised, the text is on `text`. Anything else — an object, a
- *  number, absent — is "", which drops the comment rather than stringifying
+ *  Raw from GET /tasks, `content` is a plain string. Already normalised, the
+ *  text is on `text`. Anything else (an object, a
+ *  number, absent) is "", which drops the comment rather than stringifying
  *  "[object Object]" into a steering channel.
  *
- *  Deliberately no `content.plainText` fallback: the old shape leaked the
- *  provider's DB schema and is never coming back, so a fallback would only
- *  hide the next reshape the way the last one was hidden. */
+ *  Deliberately no `content.plainText` fallback: that shape is never coming
+ *  back, so a fallback would only hide the next reshape. */
 export function commentText(c) {
   const v = c?.text ?? c?.content;
   return typeof v === "string" ? v.trim() : "";
@@ -138,9 +112,7 @@ export function normalizeComments(task, { commanders = defaultCommanders(), self
     else if (isTeammate(email, commanders)) kind = "teammate";
     // A comment that is not ours and carries no address cannot be told from a
     // stranger's, so it is dropped as external — correct, but indistinguishable
-    // from "nobody commented" unless it is said out loud. This is what the
-    // 2026-09-18 narrowing looks like from in here, and it goes quiet by itself
-    // once creator.email is restored.
+    // from "nobody commented" unless it is said out loud.
     if (kind === "external" && !email && !parseRelayed(raw).relayed) {
       console.warn(`task-comments: UNCLASSIFIED comment ${c.id} — no creator.email on the payload, dropped as external`);
     }
@@ -167,13 +139,13 @@ export function latestCursor(comments, prev = null) {
 }
 
 /** Does this comment ADDRESS the agent — the fleet's one rule for "wake up /
- *  hand it back" (2026-09-10, support lane first, general lane next).
+ *  hand it back".
  *  Mentions the agent's name (with or without @), or starts with "retry" /
  *  "go ahead" / "go". A teammate writing "waiting on the customer" on their
  *  own task must not summon the agent.
  *
- *  Deliberately SEPARATE from the verb grammar in comment-grammar.mjs
- *  (2026-09-11), which answers what a comment asks for on a task an
+ *  Deliberately SEPARATE from the verb grammar in comment-grammar.mjs,
+ *  which answers what a comment asks for on a task an
  *  agent already owns. This one answers whether a PARKED task comes back at
  *  all. Folding them together would make a bare "send" re-arm a parked
  *  general task, which is a behaviour change, not a de-duplication. */

@@ -6,7 +6,7 @@
  * Deterministic, no network: the predicate is pure, so the double-counting bug it prevents
  * is catchable without a live run.
  *
- * What earns regression cover here: the fact-candidate capture convention writes a task AND
+ * What this covers: the fact-candidate capture convention writes a task AND
  * a note for the same finding, and both land inside the same weekly window. Without the
  * exclusion the model is handed that one finding twice — once as source:"task", once as
  * source:"notes-scan" — and the report recommends the same fact edit twice under two ids.
@@ -56,12 +56,9 @@ ok("keeps an untitled note rather than throwing", !skipNoteFromScan(null));
 ok("keeps an undefined title rather than throwing", !skipNoteFromScan(undefined));
 ok("keeps an empty title rather than throwing", !skipNoteFromScan(""));
 
-// A capture written through the NOAN MCP server cannot set a title: create_note takes only
-// `content`, and the server derives the title itself — and strips a bracketed prefix while
-// doing so (measured live 2026-09-19: "[Fact Candidate] MCP prefix-survival probe 2026-09-19"
-// came back as "MCP Prefix-Survival Probe 2026-09-19"). The title-only check missed every one
-// of those, invisibly: the note has a good title, just not the one being matched on.
-console.log("skipNoteFromScan — capture notes written through MCP (no title of their own)");
+// An MCP create_note without a title gets one the server writes, with the bracketed prefix
+// dropped ("[Fact Candidate] some probe" comes back as "Some Probe"), so the content is checked too.
+console.log("skipNoteFromScan: capture notes written through MCP without a title");
 ok("skips a capture whose prefix is only in the content",
   skipNoteFromScan("MCP Prefix-Survival Probe 2026-09-19", "[Fact Candidate] Starter plan moved to $59/mo\n\nWhat came up..."),
   "the real shape: a server-derived title that dropped the prefix the scan matches on");
@@ -69,7 +66,7 @@ ok("case-insensitive on the content, like the title",
   skipNoteFromScan("Some Derived Title", "[fact candidate] pricing change"));
 ok("finds the prefix past leading blank lines",
   skipNoteFromScan("Some Derived Title", "\n\n  [Fact Candidate] Starter plan moved"),
-  "first NON-EMPTY line, trimmed — the title side stays anchored to mirror the task queue, but content is the only signal an MCP capture has");
+  "first NON-EMPTY line, trimmed; the title side stays anchored to mirror the task queue, but content is the only signal an untitled MCP capture has");
 
 console.log("skipNoteFromScan — notes the content check must NOT swallow");
 ok("keeps a note that merely discusses the convention",

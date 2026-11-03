@@ -1,58 +1,37 @@
 /**
- * Commander authentication — the pure, testable half of reply-worker's
+ * Commander authentication: the pure, testable half of reply-worker's
  * "is this really a teammate?" gate.
  *
- * From: is forgeable, and COMMANDERS (config.defaults.env) is a list of From
- * addresses, so before an inbound email is treated as a teammate command the
- * worker needs proof the message was actually sent by our domain. That proof
- * is the Authentication-Results header stamped by the MTA that received the
- * mail on our behalf — Resend Inbound runs on Amazon SES, and SES stamps
- * authserv-id `amazonses.com`, e.g. (a real inbound, 2026-09-08, domain replaced):
+ * From: is forgeable and COMMANDERS is a list of From addresses, so a command
+ * runs only with proof from the Authentication-Results header stamped by the
+ * receiving MTA. Resend Inbound runs on Amazon SES, which stamps authserv-id
+ * `amazonses.com`, for example:
+ *   amazonses.com; spf=pass (…); dkim=pass header.i=@example.com; dmarc=pass header.from=example.com;
  *
- *   amazonses.com; spf=pass (…) client-ip=…; envelope-from=someone@example.com;
- *   helo=mail-wm1-f50.google.com; dkim=pass header.i=@example.com;
- *   dmarc=pass header.from=example.com;
+ * All of these are required, else NOT verified (the caller escalates it as a
+ * possible spoof, so failing closed means a human reads an email):
  *
- * Until 2026-09-10 the check was two independent regexes over the JOINED
- * Authentication-Results value: `/dkim=pass/` and `/example\.com/`. Mail
- * DKIM-signed by an attacker's own domain with a forged From: someone@example.com
- * produces `dkim=pass header.i=@attacker.example; dmarc=fail
- * header.from=example.com` — both regexes match, and the command runs. A
- * `(dkim=pass header.i=@example.com)` comment, or an attacker-inserted second
- * Authentication-Results header, matched the same way. The dkim-signature
- * fallback never fired at all: Resend truncates that header to "v=1".
- *
- * What is required now, all of it, else NOT verified (the caller escalates
- * as a possible spoof, so the failure mode is a human reading an email, not
- * a command executing):
- *
- *   1. Exactly one From header, whose address domain is the teammate domain
- *      (TEAMMATE_DOMAIN; with none configured, the From address's own domain).
- *   2. The first Authentication-Results header is SES's (authserv-id
- *      `amazonses.com`), and no other Authentication-Results header claims
- *      that authserv-id. SES prepends its own header at the top of the
- *      message, so anything an attacker put in the message body sits below
- *      it; a second `amazonses.com` header is ambiguous and fails closed.
- *      Headers from other authservs (mx.google.com on a forward, for
- *      instance) are ignored, never trusted.
- *   3. In SES's header, a `dkim=pass` whose signing domain (`header.i`'s
- *      domain part, or `header.d`) is that domain or a subdomain of it.
- *      Other signers alongside it are fine (SES-relayed mail also carries
- *      `header.i=@amazonses.com`); a signer that merely CONTAINS the domain
+ *   1. Exactly one From header, matching the sender Resend reports, whose domain
+ *      is the teammate domain (TEAMMATE_DOMAIN; unset, the From address's own domain).
+ *   2. The first Authentication-Results header is SES's, and no other one claims
+ *      that authserv-id. A second `amazonses.com` header fails closed. Headers from
+ *      other authservs (mx.google.com on a forward) are ignored, never trusted.
+ *   3. In SES's header, a `dkim=pass` whose signing domain (`header.d`, or the
+ *      domain part of `header.i`) is that domain or a subdomain. Other signers
+ *      alongside it are fine. A signer that merely CONTAINS the domain
  *      (`example.com.attacker.example`, `notexample.com`) is not.
- *   4. In SES's header, `dmarc=pass` with `header.from` equal to the From
- *      domain. SES stamps dmarc on every inbound (`dmarc=none` when the
- *      sending domain has no policy); your teammate domain must publish one, so
- *      genuine teammate mail always passes. This is the alignment check
- *      DMARC itself performs, required in addition to (1) and (3).
+ *   4. In SES's header, `dmarc=pass` with `header.from` equal to the From domain,
+ *      in addition to (1) and (3). The teammate domain must publish a DMARC policy.
  *
- * Comments `(…)` are stripped before parsing, so nothing inside one counts.
+ * Never match these as substrings of the joined header values: an attacker's own
+ * DKIM pass plus a forged From satisfies independent regexes. Comments `(…)` are
+ * stripped before parsing, so nothing inside one counts. The dkim-signature header
+ * is no fallback: Resend truncates it to "v=1".
  *
- * Resend's header encoding, all handled by headerValues(): a header that
- * appears once is a string; one that repeats is a JSON-ENCODED STRING of an
- * array (not a native array — `'["amazonses.com; …","mx.google.com; …"]'`);
- * structured headers can be a JSON string of `[{value, params}]` objects.
- * A native array or `{value}` object is accepted too, in case that changes.
+ * Resend's header encoding, all handled by headerValues(): a header that appears
+ * once is a string; one that repeats is a JSON-ENCODED STRING of an array (not a
+ * native array); structured headers can be a JSON string of `[{value, params}]`.
+ * A native array or `{value}` object is accepted too.
  *
  * Tests: test-commander-auth.mjs.
  */

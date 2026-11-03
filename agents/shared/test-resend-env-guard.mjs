@@ -3,16 +3,11 @@
  * A missing RESEND_API_KEY or MAIL_FROM must be a NAMED error before any
  * request, never a request that Resend rejects.
  *
- * Why: resend.mjs used to read the key once at import and send whatever it
- * held. Unset, that was `Authorization: Bearer undefined`, and Resend answered
- * 401 "invalid API key" — byte-for-byte the message a revoked key produces. A
- * hand-built companion service shipped without the variable on 2026-08-31 and
- * reported a bad key for nine days while the key was fine, the
- * Actions fleet kept sending with it, and the Resend dashboard showed nothing
- * (unauthenticated requests are not logged). The delivery-stats tool had the
- * same hole: fetchEmailStatus produced 50/50 "lookup_failed", which read as a
- * fleet-wide auth failure. A missing variable and a bad credential are
- * different problems with different owners; the error must say which.
+ * An unset key sends `Authorization: Bearer undefined`, and Resend answers 401
+ * "invalid API key", byte-for-byte the message a revoked key produces, and
+ * logs nothing. The same goes for fetchEmailStatus in the delivery-stats tool.
+ * A missing variable and a bad credential are different problems with
+ * different owners; the error must say which.
  *
  * Run:  node test-resend-env-guard.mjs
  */

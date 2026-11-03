@@ -3,24 +3,18 @@
  * A contact lookup by EMAIL must go through findContactByEmail(), never a raw
  * `GET /contacts?q=<address>`.
  *
- * `q=` matches `name` only — it never reads `email`. So an email search returns
- * a 200 with zero items for a contact that plainly exists, which is
- * indistinguishable from "no such contact". Measured 2026-09-04 over 40 random
- * live contacts looked up by their own address: 15 missed, 38%.
+ * `q=` matches `name`, `alias` and `website`, and never reads `email`. So an
+ * email search returns a 200 with zero items for a contact that plainly
+ * exists, which is indistinguishable from "no such contact".
  *
- * It looks like it works, which is why it spread to nine call sites: a hit
- * happens when the address fuzzy-matches the NAME, so contacts our own capture
- * surfaces created (named `email.split("@")[0]`) match themselves. Everyone
- * else's contacts don't.
+ * It looks like it works: a hit happens when the address fuzzy-matches one of
+ * those fields, so contacts our own capture surfaces created (named
+ * `email.split("@")[0]`) match themselves. Everyone else's contacts don't.
  *
- * Each miss is a duplicate contact — and on the website chat it was worse:
- * `isSubscriber` came from this lookup, so a missed subscriber got the prospect
- * script with the support path switched off.
- *
- * The fix already existed in voice-web/auth.mjs (found there 2026-08-11) and sat
- * private to the investor sign-in gate while the rest of the fleet kept the
- * broken call. That is the failure this file exists to stop repeating — same
- * spirit as test-note-char-cap.mjs.
+ * Each miss is a duplicate contact, and anything gated on the lookup (such as
+ * `isSubscriber` on the website chat) treats a real subscriber as a stranger.
+ * The sweep covers the sibling surfaces too, so a private fix in one of them
+ * does not leave the raw call elsewhere.
  *
  * Run:  node test-contact-email-lookup.mjs
  */
@@ -68,9 +62,8 @@ const ALLOWED = new Set([
   "test-contact-email-lookup.mjs", // this file
 ]);
 
-/* Scan the sibling surfaces too, not just agents/. The bug's own fix was born
- * in voice-web/auth.mjs and stayed there — a guard that only reads this
- * directory would have missed the very file that knew better. */
+/* Scan the sibling surfaces too, not just agents/: a raw lookup in voice-web/
+ * or any other surface is the same bug. */
 /* agents/ itself is every directory agentDirs() names: one upstream, one per agent in the pack,
  * where "." would be only the folder this test happens to sit in. */
 const OWN = agentDirs();

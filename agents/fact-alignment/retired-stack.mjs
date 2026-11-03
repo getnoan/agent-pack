@@ -2,14 +2,13 @@
  * The platform's managed "Legacy" stack: where retired blocks are moved, "kept here so you
  * don't lose the facts you added to them". Every project has one, it is always in use, and the
  * public API has no way to mark a stack not-in-use (only POST /stacks/{id}/use). So a reader
- * that takes "in use" or "every fact" as its corpus pulls retired truth in: one workspace
- * measured 2026-09-29 held 43 such facts, one still quoting plans that no longer exist.
+ * that takes "in use" or "every fact" as its corpus pulls retired truth in unless it filters here.
  *
  * One predicate, shared by every fact reader (the agent's search by email and in Slack, fact
  * alignment, doc intake, the Slack stale-fact review and stack lists). Identified by slug AND
  * the managed flag, never by title: a customer can create their own custom stack called
  * "Legacy" and it is theirs to search. A block carries its stack as { id, slug, title, managed }
- * (checked live 2026-09-29), and a stack from /stacks carries slug and managed itself.
+ * and a stack from /stacks carries slug and managed itself.
  */
 
 export const RETIRED_STACK_SLUG = "legacy";
