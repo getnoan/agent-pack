@@ -1,5 +1,10 @@
 # Researches your market and refreshes your Market Research facts.
 # THIS AGENT WRITES FACTS TO YOUR PROJECT. Read a dry run before you turn DRY_RUN off.
+#
+# The cron is not the cadence. It fires every Monday, but the worker only does work when the
+# day of the month is 1 to 7, so three scheduled runs in four are green no-ops that took about
+# 15 seconds. A run you start yourself does the work on any date: force_run defaults to 1, and
+# a scheduled run has no inputs, so it never gets it.
 name: Market research refresh
 
 on:
@@ -9,6 +14,10 @@ on:
     inputs:
       dry_run:
         description: "1 = show what would happen and write nothing. Leave at 1 until you have read a dry run."
+        required: false
+        default: "1"
+      force_run:
+        description: "1 = run on any date. Blank = only if today is the 1st to the 7th, as the schedule does."
         required: false
         default: "1"
 
@@ -90,6 +99,7 @@ jobs:
           STATE_BACKEND: ${{ vars.STATE_BACKEND || 'postgres' }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           DRY_RUN: ${{ github.event.inputs.dry_run || vars.DRY_RUN || '1' }}
+          MARKET_RESEARCH_FORCE_RUN: ${{ github.event.inputs.force_run }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
           ANTHROPIC_BASE_URL: ${{ vars.ANTHROPIC_BASE_URL }}

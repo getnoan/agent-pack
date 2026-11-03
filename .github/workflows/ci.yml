@@ -91,7 +91,8 @@ jobs:
           fail=0
           for f in .github/workflows/*.yml; do
             case "$(basename "$f")" in ci.yml|keepalive.yml) continue ;; esac
-            grep -q 'default: "1"' "$f" || { echo "::error file=$f::dry_run must default to \"1\""; fail=1; }
+            # Read from the dry_run input itself: another input may also default to "1".
+            grep -A4 '^      dry_run:' "$f" | grep -q 'default: "1"' || { echo "::error file=$f::dry_run must default to \"1\""; fail=1; }
             grep -q "vars.DRY_RUN || '1'" "$f" || { echo "::error file=$f::DRY_RUN must fall back to '1'"; fail=1; }
           done
           exit $fail

@@ -60,17 +60,26 @@ where they used to live, before `agents/` was grouped by agent, and seed nothing
 
 **By hand, run the market research agent first.** It is the only one that needs no
 database, so you can watch an agent do real work before setting anything else
-up. Three keys and you are going.
+up. Four keys and you are going: NOAN, your model, Resend and Firecrawl.
 
 ```bash
-cp .env.example .env      # add your three keys
+cp .env.example .env      # add your four keys and MAIL_FROM
 node --env-file=.env agents/market-research-refresh/seed-market-research-refresh.mjs
-DRY_RUN=1 node --env-file=.env agents/market-research-refresh/market-research-refresh-worker.mjs
+# add the two lines the seed script prints to .env, then:
+MARKET_RESEARCH_FORCE_RUN=1 DRY_RUN=1 node --env-file=.env agents/market-research-refresh/market-research-refresh-worker.mjs
 ```
 
-The seed script writes that agent's starter instructions into your NOAN
-project and prints the two `.env` lines to add. The worker then shows you
-exactly what it would post, without posting anything.
+The seed script writes that agent's starter instructions into your NOAN project and
+prints two `.env` lines, the Config and Playbook block slugs. Add them before the dry
+run, which stops without them. The stack the agent refreshes is the one titled
+"Market Research"; if yours has another name, set `MARKET_RESEARCH_STACK_SLUG` too.
+The seed script does not print that one. The worker then shows you exactly what it
+would post, without posting anything.
+
+Keep `MARKET_RESEARCH_FORCE_RUN=1` for a run by hand. Without it the agent does nothing
+unless the day of the month is 1 to 7, and it still exits cleanly. That is its monthly
+cadence: the workflow fires every Monday and only the first Monday does any work. Starting
+the workflow yourself from the Actions tab runs on any date.
 
 When you are happy, drop `DRY_RUN=1`.
 
@@ -161,7 +170,7 @@ answers*), the block slugs each seed script prints when you run it, and
 the identity set under *Whose agents these are* below: `AGENT_NAME`,
 `COMPANY_NAME`, `AGENT_IDENTITY_IDS`, `COMMANDERS`, `TEAMMATE_DOMAIN`,
 `AGENT_ALLOWED_LINKS`, `REPORT_RECIPIENT_TAG`, plus `MARKET_RESEARCH_STACK_SLUG`
-for market research, and the people work is handed to: `PARK_ASSIGNEES_CS`,
+for market research if your stack is not titled "Market Research", and the people work is handed to: `PARK_ASSIGNEES_CS`,
 `PARK_ASSIGNEES_SALES`, `PARK_ASSIGNEES_ENG`, `HUMAN_IDENTITIES`,
 `FACT_ALIGNMENT_REVIEW_ASSIGNEES` and `REPLY_HUMAN_ASSIGNEES`. Every workflow forwards them; leave one unset and that
 agent takes the cautious default.
