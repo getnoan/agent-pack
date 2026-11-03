@@ -17,7 +17,7 @@ on:
         required: false
         default: "1"
       force_run:
-        description: "1 = run on any date. Blank = only if today is the 1st to the 7th, as the schedule does."
+        description: "1 = run on any date. 0 = only if today is the 1st to the 7th, as the schedule does."
         required: false
         default: "1"
 
