@@ -301,7 +301,7 @@ and why, and never files the same one twice.
 | Agent | Reads | If empty |
 |---|---|---|
 | **customer support** | Product FAQs, Product Features, Product List | escalates most questions to a human |
-| **market research** | Product List, Strategy, Roadmap, FAQs, Monetization Model, Business Vision, Mission & Vision, Value Proposition, Brand Positioning; Ideal Customer, Sales Customer Profile, Buyer Persona, Buyer Segments, ICP Triggers, Audience Segments | researches with no anchor in what you already know |
+| **market research** | Product List, Strategy, Roadmap, FAQs, Monetization Model, Mission & Vision, Value Proposition, Brand Positioning; Ideal Customer, Sales Customer Profile, Buyer Persona, Buyer Segments, ICP Triggers, Audience Segments | researches with no anchor in what you already know |
 | **sales deck** | Brand Identity, Brand Tone, Brand Positioning, Value Proposition, Ideal Customer, Sales Customer Profile, plus your design-system block and the `## Slide design` section of the Deck Playbook | thin decks in no particular visual system |
 | **activity report**, **fact alignment**, **newsletter** | your activity, the whole fact base, assets by tag | nothing to fill |
 
