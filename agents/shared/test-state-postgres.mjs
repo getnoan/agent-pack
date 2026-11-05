@@ -41,7 +41,13 @@ const pgEnv = { ...process.env, LC_ALL: process.platform === "darwin" ? "en_US.U
 execFileSync("initdb", ["-D", data, "-U", "ledger", "--auth=scram-sha-256", `--pwfile=${pwfile}`, "-E", "UTF8", "--locale=C"], { stdio: "ignore", env: pgEnv });
 execFileSync("pg_ctl", ["-D", data, "-w", "-l", path.join(dir, "log"), "-o", `-p ${port} -c listen_addresses=127.0.0.1 -c unix_socket_directories=''`, "start"], { stdio: "ignore", env: pgEnv });
 
-const url = `postgres://ledger:${encodeURIComponent(password)}@127.0.0.1:${port}/postgres`;
+const urlFor = (p) => {
+  const u = new URL(`postgres://127.0.0.1:${p}/postgres`);
+  u.username = "ledger";
+  u.password = password;
+  return u.href;
+};
+const url = urlFor(port);
 
 try {
   process.env.STATE_BACKEND = "postgres";
@@ -80,7 +86,7 @@ try {
 
   // A database that cannot be reached is an error, never a missing ledger or an
   // empty one, and the error does not carry the password.
-  process.env.DATABASE_URL = `postgres://ledger:${encodeURIComponent(password)}@127.0.0.1:${await freePort()}/postgres`;
+  process.env.DATABASE_URL = urlFor(await freePort());
   for (const call of [() => loadLocalState("demo", "sent"), () => seedLocalState("fresh", { sent: {} }), () => saveLocalState("demo", big)]) {
     assert.throws(call, (e) => {
       assert.match(e.message, /postgres state failed/);
