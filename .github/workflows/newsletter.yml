@@ -9,12 +9,24 @@ on:
         description: "1 = show what would happen and write nothing. Leave at 1 until you have read a dry run."
         required: false
         default: "1"
+      mode:
+        description: "dry-run counts and previews. test sends to the test inbox. live sends to the audience, only after a test of this version. cancel withdraws a scheduled send. test, live and cancel also need dry_run set to 0."
+        required: true
+        default: "dry-run"
+        type: choice
+        options: [dry-run, test, live, cancel]
       asset:
         description: "Title or id of the NOAN asset to send"
         required: true
       audience_tag:
-        description: "Send to every contact carrying this tag"
-        required: true
+        description: "Send to every contact carrying this tag (not needed for cancel)"
+        required: false
+      test_recipient:
+        description: "Where test delivers, comma separated. Empty uses the NEWSLETTER_TEST_RECIPIENT variable."
+        required: false
+      nonce:
+        description: "Any new value re-sends an issue already in the ledger"
+        required: false
 
 concurrency:
   group: newsletter
@@ -85,8 +97,24 @@ jobs:
           STATE_BACKEND: ${{ vars.STATE_BACKEND || 'postgres' }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           DRY_RUN: ${{ github.event.inputs.dry_run || vars.DRY_RUN || '1' }}
+          NEWSLETTER_MODE: ${{ github.event.inputs.mode || 'dry-run' }}
+          NEWSLETTER_NONCE: ${{ github.event.inputs.nonce }}
           NEWSLETTER_ASSET: ${{ github.event.inputs.asset }}
           NEWSLETTER_AUDIENCE_TAG: ${{ github.event.inputs.audience_tag }}
-          NEWSLETTER_TEST_RECIPIENT: ${{ vars.NEWSLETTER_TEST_RECIPIENT }}
+          NEWSLETTER_TEST_RECIPIENT: ${{ github.event.inputs.test_recipient || vars.NEWSLETTER_TEST_RECIPIENT }}
           NEWSLETTER_MAX_RECIPIENTS: ${{ vars.NEWSLETTER_MAX_RECIPIENTS }}
+          NEWSLETTER_UNSUB_BASE: ${{ vars.NEWSLETTER_UNSUB_BASE }}
           NEWSLETTER_UNSUB_SECRET: ${{ secrets.NEWSLETTER_UNSUB_SECRET }}
+          NEWSLETTER_EXCLUDE_TAGS: ${{ vars.NEWSLETTER_EXCLUDE_TAGS }}
+          NEWSLETTER_TEST_WINDOW_DAYS: ${{ vars.NEWSLETTER_TEST_WINDOW_DAYS }}
+          NEWSLETTER_SEND_AT: ${{ vars.NEWSLETTER_SEND_AT }}
+          NEWSLETTER_IMAGE_BASE: ${{ vars.NEWSLETTER_IMAGE_BASE }}
+          NEWSLETTER_REPORT_TO: ${{ vars.NEWSLETTER_REPORT_TO }}
+          NEWSLETTER_ASSIGNEES: ${{ vars.NEWSLETTER_ASSIGNEES }}
+          NEWSLETTER_SUMMARY_OUT: ${{ runner.temp }}/newsletter-summary.md
+      - name: Job summary
+        if: always() && steps.configured.outputs.ready == '1'
+        run: |
+          if [ -f "$RUNNER_TEMP/newsletter-summary.md" ]; then
+            cat "$RUNNER_TEMP/newsletter-summary.md" >> "$GITHUB_STEP_SUMMARY"
+          fi

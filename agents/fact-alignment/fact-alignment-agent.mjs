@@ -418,7 +418,8 @@ export function renderWebsiteSection({ site, manifest, bodyBudget = null }) {
   const findings = site.findings || [];
   const cov = site.coverage || {};
   const coverageLine = `Scan of ${scanDate}: ${cov.pagesFetched ?? "?"}/${cov.pagesConfigured ?? "?"} page(s) read, ${cov.claims ?? 0} checkable claim(s), ${cov.agreed ?? 0} agreed with the facts.` +
-    (cov.pagesMissed?.length ? ` Not read: ${cov.pagesMissed.join(", ")}.` : "");
+    (cov.pagesMissed?.length ? ` Not read: ${cov.pagesMissed.join(", ")}.` : "") +
+    (cov.emptyBlocks?.length ? ` Mapped blocks that read empty, so claims on them were not compared with a fact (no fact recorded, or the scan's key cannot see the stack): ${cov.emptyBlocks.join(", ")}.` : "");
 
   if (!findings.length) return ["", "## Website Divergences", coverageLine, "", "The site and the facts agree everywhere the scan looked."];
 

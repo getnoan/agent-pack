@@ -6,8 +6,8 @@
  *   GET   /me
  *   GET   /facts?block_id=<id>            → { meta, links, items:[{id,blockId,blockSlug,content,createdAt}] }
  *         (`block_slug=` is deprecated; call() sends a slug as its id, see block-id.mjs)
- *   GET   /contacts?q=<query>             → { ..., items:[Contact] }  ← matches name, alias and
- *                                            website, never email: for an address use findContactByEmail()
+ *   GET   /contacts?q=<query>             → { ..., items:[Contact] }  ← substring search on searchText. It
+ *                                            finds some addresses and a miss proves nothing: for an address use findContactByEmail()
  *   GET   /blocks ?slug/title             → { ..., items:[BlockListItem] }
  *   GET   /tasks ?status&completed        → { ..., items:[Task] }
  *   POST  /tasks                          → create
@@ -258,14 +258,16 @@ const withPerPage = (path, n) => withParam(path, "per_page", n, { drop: ["page"]
 /** Read every page of a list endpoint — the query filter included, on every page
  *  (see sweepOnce: the API's own next link loses it).
  *
- *  Two defects this works around, both in GET /contacts and both silent (a known pagination bug in the API):
+ *  Built for two silent defects in GET /contacts. The API has since added an id tiebreak to
+ *  that sort, and a live read on 2026-11-04 returned every row, all unique, at per_page 100 and
+ *  50 (one run each). Other list endpoints were not re-measured, so the guards stay:
  *
- *  1. THE ROWS ARE NOT UNIQUE. Pagination runs over a non-deterministic sort with no
- *     tiebreaker, so a single pass returns some rows twice and never returns others.
+ *  1. THE ROWS WERE NOT UNIQUE. Pagination ran over a non-deterministic sort with no
+ *     tiebreaker, so a single pass returned some rows twice and never returned others.
  *     Rows are deduped by id.
  *
- *  2. A DIFFERENT FEW PERCENT IS MISSED AT EACH PAGE SIZE. A union across page sizes
- *     recovers most of it, but not all.
+ *  2. A DIFFERENT FEW PERCENT WAS MISSED AT EACH PAGE SIZE. A union across page sizes
+ *     recovered most of it, but not all.
  *
  *  The extra passes only run when the first one comes up short against the server's own
  *  meta.totalItems, so endpoints that paginate correctly — /tasks, /notes, /assets all do —
@@ -1269,15 +1271,17 @@ export function taskContactId(task) {
 }
 
 /* ---------------- contacts by email ----------------
- * GET /contacts?q= matches name, alias and website, never `email`. An email
- * search can return 0 items for a contact that exists, and a 200-with-nothing
- * reads exactly like "no such contact". It only hits when the address
- * fuzzy-matches one of those fields, so it looks like it works.
+ * GET /contacts?email= is the lookup: an exact, case-insensitive filter.
+ *
+ * GET /contacts?q= is a substring search on the stored searchText. It finds some
+ * addresses and misses others (33 of 40 when measured on 2026-11-04, cause not
+ * traced), and a 200-with-nothing reads exactly like "no such contact", so a miss
+ * proves nothing.
  *
  * A missed lookup creates a duplicate contact, and anything derived from it
- * (the website chat's `isSubscriber`) is wrong too. So: try `q=` first because
- * it is one cheap request, then fall back to an exact email match over the
- * full list.
+ * (the website chat's `isSubscriber`) is wrong too. So: ask the filter first. If
+ * that cannot be trusted, try `q=` because it is one cheap request, then fall back
+ * to an exact email match over the full list.
  *
  * A fallback sweep can still MISS — noanGetAll warns when its read is a floor
  * rather than a census — so this makes duplicates rare, not impossible.
@@ -1303,13 +1307,13 @@ const CONTACT_SWEEP_ROUNDS = 2;
 
 /** Contacts the list endpoint CANNOT return, by id. Supplied by the deployment, EMPTY by default.
  *
- *  The API's pagination bug (reported to the platform): `GET /contacts` paginates on a non-unique
- *  sort key with no tiebreaker, so rows inside a large tie group can be returned twice or never.
- *  Where a project has big tie clusters — many contacts created on one exact timestamp — a union
- *  sweep across page sizes tops out below the total `meta.totalItems` reports, missing the same
- *  rows every run. They are ordinary, live records; they just cannot be reached by listing.
+ *  `GET /contacts` used to paginate on a non-unique sort key with no tiebreaker, so rows inside a
+ *  large tie group could be returned twice or never. Where a project had big tie clusters (many
+ *  contacts created on one exact timestamp), a union sweep across page sizes topped out below the
+ *  total `meta.totalItems` reports, missing the same rows every run. The sort now has an id
+ *  tiebreak, and a live read on 2026-11-04 returned every row.
  *
- *  They all resolve fine by id. So the miss path reads them directly, and the dedupe stops being
+ *  Those rows always resolved by id. So the miss path reads them directly, and the dedupe is not
  *  blind to the addresses most at risk of being duplicated — there is no DELETE /contacts, so
  *  each of those duplicates would be permanent.
  *
@@ -1319,9 +1323,8 @@ const CONTACT_SWEEP_ROUNDS = 2;
  *  Set NOAN_UNREACHABLE_CONTACT_IDS (comma or whitespace separated) where a project needs it.
  *  Ids, not emails, deliberately: an id carries no personal data.
  *
- *  STOP SETTING THIS when the platform's pagination fix lands — a tiebreaker in the ORDER BY makes
- *  every row reachable and this becomes dead weight that silently rots as the board grows. It is a
- *  floor, not a fix: rows can fall into the gap at any time and nothing here will know. */
+ *  STOP SETTING THIS now that the tiebreak has landed: it was a floor, not a fix, and with every
+ *  row reachable it is dead weight that silently rots as the board grows. */
 const UNREACHABLE_CONTACT_IDS = (process.env.NOAN_UNREACHABLE_CONTACT_IDS || "")
   .split(/[\s,]+/).map(s => s.trim()).filter(Boolean);
 
@@ -1352,8 +1355,7 @@ async function reportedContactTotal() {
 /** Union sweep with a round count, cached. noanGetAll already unions page sizes 100/75/50/25 in
  *  one pass each, but it never RETRIES a size and it cannot tell the caller whether it succeeded
  *  — it warns to the console and returns the short list. Repeating the whole cycle is the only
- *  lever on a row that four passes happened to drop, since the loss is random rather than a
- *  fixed set of unreachable rows. */
+ *  lever on a row that four passes happened to drop, should a sweep ever come up short again. */
 async function contactSnapshot({ rounds = 1 } = {}) {
   const byId = new Map();
   if (Date.now() - _contactsByEmailCache.at <= CONTACTS_CACHE_MS) {
@@ -1361,9 +1363,10 @@ async function contactSnapshot({ rounds = 1 } = {}) {
   }
   let reportedTotal = _contactsByEmailCache.reportedTotal;
 
-  // CONVERGED, not "reached meta.totalItems": the list endpoint cannot return every row (a known
-  // API pagination bug), so that test never passes. A full extra pass that finds nobody new means
-  // we have everything the API is willing to give.
+  // CONVERGED, not "reached meta.totalItems". A live read on 2026-11-04 did reach the total, but
+  // this sweep only runs when the email filter cannot be trusted, and it must not depend on one
+  // read matching one count. A full extra pass that finds nobody new means we have everything the
+  // API is willing to give.
   let converged = false;
   for (let round = 0; round < rounds; round++) {
     const before = byId.size;
@@ -1378,8 +1381,8 @@ async function contactSnapshot({ rounds = 1 } = {}) {
     list,
     reportedTotal,
     converged,
-    // What the API admits exists but will not hand over. Reported so a caller can say so out
-    // loud instead of quietly treating the gap as absence.
+    // What the API counts but this sweep did not read. Reported so a caller can say so out loud
+    // instead of quietly treating a gap as absence.
     unreadable: typeof reportedTotal === "number" ? Math.max(0, reportedTotal - list.length) : null,
   };
 }
@@ -1403,15 +1406,15 @@ async function contactsByEmailFilter(needle) {
  *  `{ contact, complete, seen, reportedTotal, unreadable }`. A hit is always `complete: true` —
  *  a record we READ is real however short the sweep was. A miss is trustworthy when the sweep
  *  CONVERGED: a full extra pass that found nobody new means we have everything the API is
- *  willing to hand over, which is the most any client can establish (a known API pagination bug).
+ *  willing to hand over, which is the most any client can establish.
  *
- *  It is deliberately NOT "we saw every row meta.totalItems claims": the list endpoint drops rows
- *  inside large tie groups, so that test never passes and every miss would stay untrusted.
+ *  It is deliberately NOT "we saw every row meta.totalItems claims". A live read on 2026-11-04 did
+ *  return every row, but that was one read of each page size, and if the list ever comes up short
+ *  again a gate on the count would leave every miss untrusted.
  *
  *  The API's exact email filter answers first, in one request (contactsByEmailFilter). The sweep
  *  below runs only when that filter cannot be trusted, and its miss path is expensive on purpose:
- *  an established contact can be absent from several consecutive union sweeps, and there is no
- *  DELETE /contacts, so a duplicate is permanent. Any ids in NOAN_UNREACHABLE_CONTACT_IDS are read
+ *  there is no DELETE /contacts, so a duplicate is permanent. Any ids in NOAN_UNREACHABLE_CONTACT_IDS are read
  *  directly before a create. The sweep took 33 s for a new address at about 1,160 contacts, past
  *  what a website visitor's request survives. */
 export async function lookupContactByEmail(email) {
@@ -1422,8 +1425,8 @@ export async function lookupContactByEmail(email) {
   const filtered = await contactsByEmailFilter(needle);
   if (filtered) return { contact: match(filtered), complete: true, seen: null, reportedTotal: null, unreadable: 0 };
 
-  // `q=` never matches an address on this API, but it is one cheap request and it does hit when
-  // the local part or domain happens to appear in a name, alias or website. Kept as a fast path.
+  // `q=` searches searchText and finds some addresses but not all, so only a hit means anything:
+  // a miss proves nothing. It is one cheap request, so it is kept as a fast path.
   const viaQ = await noanGet(`/contacts?q=${encodeURIComponent(needle)}&per_page=50`)
     .then(r => match(r?.items || []))
     .catch(() => null);
@@ -1480,8 +1483,9 @@ function rememberContact(contact) {
 
 /** One contact by id: the full record, memos and tags included, or null if no such contact.
  *
- *  Use this whenever you hold an id. `GET /contacts?q=<id>` never matches (q searches name,
- *  alias and website), and scanning one list page misses every contact past the first 100,
+ *  Use this whenever you hold an id. `GET /contacts?q=<id>` is the wrong tool (q searches
+ *  searchText, which is built from a contact's details and not its id, and a miss proves nothing),
+ *  and scanning one list page misses every contact past the first 100,
  *  which is most of them. The follow-up worker did both until 2026-10-30, so a task carrying
  *  a valid Contact ID fell back to a bare email and the reach check refused it.
  *
@@ -1550,8 +1554,8 @@ export async function findOrCreateContactByEmail(email, { name, website, tagIds,
   // A miss we cannot trust must not become a create. Creating is irreversible — the API has no
   // DELETE on contacts — so the asymmetry is total: refusing costs a retry, creating costs a
   // permanent duplicate on a record that may already carry memos, tasks and an open case.
-  // "Cannot trust" means the read never SETTLED, not "fewer rows than meta.totalItems": the list
-  // endpoint makes that permanently true, and a guard that always fires files no contact ever.
+  // "Cannot trust" means the read never SETTLED, not "fewer rows than meta.totalItems": if the list
+  // ever comes up short again, a guard on the count would fire on every create and file no contact.
   if (!complete && !allowIncompleteSweep) {
     const e = new Error(
       `refusing to create a contact for ${needle}: two full sweeps were still returning new rows ` +

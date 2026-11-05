@@ -26,6 +26,8 @@
 import { callClaudeJSON } from "../shared/anthropic.mjs";
 import { LABEL_DECISION, handleFooter } from "../shared/report-handles.mjs";
 
+const MARKET_RESEARCH_STACK_TITLE = "Market Research";
+
 const MODEL = process.env.MARKET_RESEARCH_MODEL || "claude-opus-5";
 
 const MAX_QUERIES_PER_BLOCK = 3;
@@ -79,6 +81,24 @@ function renderCategoryGrounding(facts) {
   return facts.length
     ? facts.map(g => `### ${g.title} (\`${g.slug}\`)\n${g.content}`).join("\n\n")
     : "(no Category Dynamics grounding blocks resolved this run — research and draft competitors from the block alone and say so in changeSummary)";
+}
+
+/**
+ * The stack this agent maintains: by slug when one is configured, else by title, which is how a
+ * downstream copy finds it. The wizard and the seed script set no stack slug. An empty `slug=` is
+ * not a filter (the API answers with every stack, so the first would be read as this one), and
+ * the `title` filter is a fuzzy match ("Market" also returns "Marketing"), hence the exact check.
+ */
+export async function findMarketResearchStack({ slug, get }) {
+  if (slug) {
+    const stack = ((await get(`/stacks?slug=${encodeURIComponent(slug)}`)).items || [])[0];
+    if (!stack) throw new Error(`Market Research stack not found via GET /stacks?slug=${slug}`);
+    return stack;
+  }
+  const items = (await get(`/stacks?title=${encodeURIComponent(MARKET_RESEARCH_STACK_TITLE)}`)).items || [];
+  const stack = items.find(s => (s.title || "").trim().toLowerCase() === MARKET_RESEARCH_STACK_TITLE.toLowerCase());
+  if (!stack) throw new Error(`No stack titled "${MARKET_RESEARCH_STACK_TITLE}" in this project. Add one in NOAN, or set MARKET_RESEARCH_STACK_SLUG to the stack this agent should maintain.`);
+  return stack;
 }
 
 export function buildPlanUserPrompt({ blocks, categoryDynamicsGrounding = [] }) {
@@ -220,8 +240,8 @@ export async function draftBlocks({ blocks, researchByBlock, companyContextGroun
   // 64000, not 16000: the draft must emit complete replacement content for all four
   // Market Research blocks (~22.6k chars of baseline alone, and a refined draft usually
   // runs longer), plus four changeSummaries and the report sections — JSON-escaped. At
-  // 16000 the first real run of this agent died with "response truncated at max_tokens"
-  // after ~4.5 minutes of research, having written nothing.
+  // 16000 a dry run of this agent died with "response truncated at max_tokens" after ~4.5
+  // minutes of research. It was not the agent's first run: an earlier live run had fitted.
   //
   // 16k is the right cap for a NON-streaming call, where a long response trips undici's
   // 300s headers timeout. It does not apply here: anthropic.mjs streams every request

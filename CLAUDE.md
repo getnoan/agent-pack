@@ -31,7 +31,7 @@ NOAN's open-source agent pack (MIT): six agents that run on GitHub Actions again
 - Seed scripts have no dry run. They create the Agent Config stack and blocks, write a fact only into a block they created in the same run, and file a task per empty block the agent reads.
 - Workflows read secrets through `env:`, never inside `run:`. Each agent workflow starts with a `Configured?` step that prints `not configured yet: NAME` and exits green. The setup wizard parses that line.
 - `GOOGLE_SERVICE_ACCOUNT_JSON` is written to `agents/customer-support/google-service-account.json` during the run (gitignored). `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` are only for the sales deck.
-- Every `uses:` is pinned to a commit SHA. CI checks that the template uses the same pins as the workflows; Dependabot updates them monthly.
+- Every `uses:` is pinned to a commit SHA. CI checks that the template uses the same pins as the workflows. Dependabot updates the workflows monthly but not `templates/agent-workflow.yml`, so its PR fails CI until the template is bumped on the same branch.
 
 ## Conventions
 
