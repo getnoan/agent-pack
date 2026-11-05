@@ -53,7 +53,7 @@ export const GROUNDING = {
     slugs: [
       // company context — the same list market-research-refresh-worker.mjs grounds Company Context in
       "product-list", "product-strategy", "product-roadmap", "product-faq", "monetization-model",
-      "business-vision", "mission-vision", "value-proposition", "brand-positioning",
+      "mission-vision", "value-proposition", "brand-positioning",
       // ICP — what Customer Insights is anchored to
       "ideal-customer", "sales-customer-profile", "sales-buyer-persona", "sales-buyer-segments",
       "sales-icp-triggers", "audience-segments",

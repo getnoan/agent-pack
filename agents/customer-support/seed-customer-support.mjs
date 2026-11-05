@@ -15,6 +15,7 @@
  */
 
 import { runSeed } from "../shared/agent-config-seed.mjs";
+import { seedLocalState } from "../shared/state-local.mjs";
 
 export const REPLY_CONFIG_FACT = `You are the reply agent. Someone has emailed you — usually a contact replying to a message this fleet sent them, sometimes a first message from a person who was not in the network until this email created their contact record. Your job is to decide whether you can answer accurately from the facts, and either draft a short helpful reply or escalate to a human.
 
@@ -79,6 +80,11 @@ Per turn, choose one of three actions.
 **Follow-up tasks.** When a case surfaces real work — a bug to investigate, a documentation gap, a promise made to the customer — record it as a task. Assign a person for anything needing a person; assign an agent only for things your agents actually do. **Never invent work to seem thorough.** Most cases need no tasks at all.
 
 **The case summary is the handover.** It becomes the memo on the contact and the brief for whoever picks the case up. Write it so a teammate who never saw the thread understands the situation in ten seconds: what happened, what you did, and what if anything is still outstanding.`;
+
+// The worker refuses to run without its ledger: an empty one would re-reply to
+// every inbound email in the feed, so it is only ever created here, once.
+const ledger = seedLocalState("reply", { processed: {}, sent: {} });
+console.log(`${ledger.created ? "created" : "found"} ledger ${ledger.file}`);
 
 runSeed({
   agent: "customer support",

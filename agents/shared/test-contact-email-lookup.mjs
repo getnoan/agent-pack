@@ -1,15 +1,15 @@
 #!/usr/bin/env node
 /**
  * A contact lookup by EMAIL must go through findContactByEmail(), never a raw
- * `GET /contacts?q=<address>`.
+ * `GET /contacts?q=<address>`. findContactByEmail() asks `?email=`, the exact
+ * filter, first.
  *
- * `q=` matches `name`, `alias` and `website`, and never reads `email`. So an
- * email search returns a 200 with zero items for a contact that plainly
- * exists, which is indistinguishable from "no such contact".
+ * `q=` is a substring search on the stored searchText. It finds some addresses
+ * and not others (33 of 40 when measured on 2026-11-04), so it can return a 200
+ * with zero items for a contact that plainly exists, which is indistinguishable
+ * from "no such contact". A miss proves nothing.
  *
- * It looks like it works: a hit happens when the address fuzzy-matches one of
- * those fields, so contacts our own capture surfaces created (named
- * `email.split("@")[0]`) match themselves. Everyone else's contacts don't.
+ * It looks like it works, because it usually does.
  *
  * Each miss is a duplicate contact, and anything gated on the lookup (such as
  * `isSubscriber` on the website chat) treats a real subscriber as a stranger.

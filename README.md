@@ -120,6 +120,10 @@ STATE_BACKEND=postgres
 DATABASE_URL=postgres://…      # any Postgres: Supabase, Neon, RDS, your own
 ```
 
+The agents reach it through `psql`, which GitHub's runners already have; install it
+if you run them anywhere else. The first save creates one table, `agent_state`, with
+row level security on, so a Supabase REST API does not publish it.
+
 No database? Supabase's free tier fits comfortably — the ledgers are a few
 kilobytes against a 500 MB limit. One thing to know: **free Supabase projects
 pause after a week of inactivity**, so if you only run the weekly agents,
@@ -131,6 +135,9 @@ file and needs no database at all.
 
 A missing ledger is treated as an error, never as a first run. That is
 deliberate: a lost ledger that looked like day one would re-send everything.
+The customer support and newsletter agents need theirs created first: run
+`seed-customer-support.mjs` and `seed-newsletter.mjs` with `STATE_BACKEND` and
+`DATABASE_URL` set. A run that finds none stops and says so.
 
 ## Running it on GitHub Actions
 
@@ -151,7 +158,7 @@ nothing run — until the secrets are there.
 | `ANTHROPIC_API_KEY` **or** `LLM_API_KEY` | every agent except the newsletter — either name works, see *Which model answers* |
 | `DATABASE_URL` | every agent except market research |
 | `FIRECRAWL_API_KEY` | market research |
-| `NEWSLETTER_UNSUB_SECRET` | newsletter |
+| `NEWSLETTER_UNSUB_SECRET` | newsletter: signs each unsubscribe link, and your site checks it with the same value |
 | `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` | sales deck, only if you want send-later |
 | `GOOGLE_SERVICE_ACCOUNT_JSON` | customer support, only to book meetings (see *Scheduling meetings*) |
 
@@ -163,8 +170,39 @@ the identity set under *Whose agents these are* below: `AGENT_NAME`,
 `AGENT_ALLOWED_LINKS`, `REPORT_RECIPIENT_TAG`, plus `MARKET_RESEARCH_STACK_SLUG`
 for market research, and the people work is handed to: `PARK_ASSIGNEES_CS`,
 `PARK_ASSIGNEES_SALES`, `PARK_ASSIGNEES_ENG`, `HUMAN_IDENTITIES`,
-`FACT_ALIGNMENT_REVIEW_ASSIGNEES` and `REPLY_HUMAN_ASSIGNEES`. Every workflow forwards them; leave one unset and that
+`FACT_ALIGNMENT_REVIEW_ASSIGNEES` and `REPLY_HUMAN_ASSIGNEES`. For the newsletter:
+`NEWSLETTER_UNSUB_BASE` and `NEWSLETTER_TEST_RECIPIENT`, both required to send, and
+`NEWSLETTER_REPORT_TO` for a report after each send. Every workflow forwards them; leave one unset and that
 agent takes the cautious default.
+
+### Sending a newsletter
+
+An issue is one NOAN asset tagged `Newsletter`: its title is the subject, its
+description the headline, its text the body. The audience is everyone carrying a
+contact tag, minus anyone tagged `Unsubscribed`. Run `seed-newsletter.mjs` once
+first; it creates both tags and the ledger.
+
+It only runs when you press the button: **Actions → Newsletter → Run workflow**.
+Nothing here sends on a schedule, or because a tag was added.
+
+| Step | Set | What happens |
+|---|---|---|
+| 1 | `mode` dry-run | Counts the audience and shows the issue. Sends nothing |
+| 2 | `mode` test, `dry_run` 0 | Sends it to `NEWSLETTER_TEST_RECIPIENT`. Read it in your inbox |
+| 3 | `mode` live, `dry_run` 0 | Sends to the audience, once per contact. Refused unless this exact version had a test in the last 7 days |
+
+**You need an unsubscribe page before step 2.** Every issue carries a link, the pack
+does not host one, and the agent refuses to send without `NEWSLETTER_UNSUB_BASE`.
+Your site at that address must handle:
+
+- `GET /unsubscribe?c=<contact id>&t=<token>`, the link in the email
+- `POST /api/public/unsubscribe?c=<contact id>&t=<token>`, the one-click button in
+  mail clients, answering 200
+
+Both check that `t` is the first 32 hex characters of
+`hmac_sha256(NEWSLETTER_UNSUB_SECRET, contact id)`, then add the `Unsubscribed` tag to
+that contact through the NOAN API. `PATCH /contacts/{id}` replaces the tag list, so
+send the existing tags with the new one.
 
 ### Scheduling meetings
 
