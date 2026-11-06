@@ -63,7 +63,7 @@ database, so you can watch an agent do real work before setting anything else
 up. Three keys and you are going.
 
 ```bash
-cp .env.example .env      # add your three keys
+cp .env.example .env      # add your keys, and NOAN_SEED_API_KEY (below)
 node --env-file=.env agents/market-research-refresh/seed-market-research-refresh.mjs
 DRY_RUN=1 node --env-file=.env agents/market-research-refresh/market-research-refresh-worker.mjs
 ```
@@ -72,7 +72,79 @@ The seed script writes that agent's starter instructions into your NOAN
 project and prints the two `.env` lines to add. The worker then shows you
 exactly what it would post, without posting anything.
 
-When you are happy, drop `DRY_RUN=1`.
+**Seeding takes your own key, not the agent's.** It creates the Agent Config
+stack and its blocks, and NOAN lets only an Owner or Executive create stacks
+and blocks. Your NOAN agent is refused (`403 MissingPermission`) whatever its
+key's scopes. So put your own key (Settings → API) in `.env` as
+`NOAN_SEED_API_KEY`. The seed uses it; the agents never do and keep running on
+the agent's key in `NOAN_PERSONAL_API_KEY`. Once everything is seeded you can
+delete that line. The wizard handles this for you: it seeds with the key you
+give it first.
+
+When you are happy, run it with `DRY_RUN=0` in front instead. Dropping `DRY_RUN=1` from
+the command is not enough: `.env` sets it too, and that copy still holds.
+
+### Set up with a coding agent
+
+Using Claude Code, Codex, Cursor or similar? Tell it: *"Set up the weekly activity
+report from https://github.com/getnoan/agent-pack by following the 'Set up with a coding
+agent' section of its README."* The rest of this section is written for that agent.
+
+The weekly activity report is the easiest agent to start with. It only reads the
+workspace, saves one note and, once turned on, sends one email. It never changes a
+business fact. Work through the steps in order, check each one, and tell the person in a
+sentence what you did.
+
+**Ground rules**
+
+- Never ask for a key in the chat, and never print one. The person types keys into `.env`
+  themselves. Check a key by its length only:
+  `node --env-file=.env -e 'console.log((process.env.NOAN_PERSONAL_API_KEY||"").length)'`.
+- Every run is a dry run until the person says, in their own words, to send for real.
+- Don't edit anything under `agents/`. If something looks broken, report it.
+- `.env` is gitignored. Don't commit it or copy it anywhere.
+
+**Steps**
+
+1. **Check the machine.** `node --version` must be 22 or later, and `git` must work.
+   Nothing needs installing: the agents use only Node's standard library.
+2. **Get the code.** Clone this repository if you are not already in a clone, then
+   `cp .env.example .env`, unless `.env` already exists.
+3. **The person creates three keys**, in the NOAN app and a browser:
+   - The agent's key: Settings → Team → Agent creates their NOAN agent (once, as an
+     Owner), and Settings → API → Agent API Keys creates its key. It goes in
+     `NOAN_PERSONAL_API_KEY`.
+   - Their own key, from Settings → API. It goes in `NOAN_SEED_API_KEY` and is used only
+     to seed (see above).
+   - A model key, in `ANTHROPIC_API_KEY`. For another provider, see *Which model answers*.
+4. **Fill in `.env`.** Set `STATE_BACKEND=local` and delete the `DATABASE_URL` line, so
+   past runs are tracked in a file and no database is needed. Ask the person to paste
+   their three keys in, then check each one's length.
+5. **Seed:** `node --env-file=.env agents/weekly-activity-report/seed-weekly-activity-report.mjs`.
+   It creates the Agent Config stack and prints two `ACTIVITY_REPORT_…` lines. Copy them
+   into `.env`; they are not secret. Running it again is safe.
+6. **Dry run:**
+   `DRY_RUN=1 node --env-file=.env agents/weekly-activity-report/weekly-activity-report-worker.mjs`.
+   Show the person the report. A first run says it has no earlier week to compare
+   against; that is expected.
+7. **Send for real, only when asked.** The person needs a [Resend](https://resend.com)
+   key and a domain verified there; set `RESEND_API_KEY` and a `MAIL_FROM` on that
+   domain. They put a NOAN tag (for example `Weekly Report`) on their own contact; set
+   `REPORT_RECIPIENT_TAG` to its name. Then run step 6 with `DRY_RUN=0` in front.
+8. **Finish** by telling them: the report is saved as a note and emailed to the tagged
+   contacts; editing the two facts in the Agent Config stack changes the next run; and
+   *Running it on GitHub Actions* below makes it weekly, with a Postgres database
+   (Supabase's free tier is enough). Offer to walk them through it.
+
+**If something fails**
+
+| You see | Fix |
+|---|---|
+| `Seeding needs to create … only an Owner or Executive` | An Owner or Executive puts their own key in `NOAN_SEED_API_KEY` |
+| `Unauthenticated` / `API Key missing` | A NOAN key did not load: check its length, and remove quotes or spaces around it |
+| `Missing required env var: …` | Fill in that line. For a dry run, `RESEND_API_KEY` and `MAIL_FROM` can keep their placeholders |
+| State or `DATABASE_URL` errors | Step 4 was skipped: `STATE_BACKEND=local`, no `DATABASE_URL` |
+| A near-empty report | A quiet week in the workspace. Say so; it is not a fault |
 
 ### Where things are
 
@@ -153,7 +225,7 @@ nothing run — until the secrets are there.
 
 | Secret | Needed by |
 |---|---|
-| `NOAN_PERSONAL_API_KEY` | every agent: the **agent's** key (Settings → API → Agent API Keys), so what the agents write is theirs |
+| `NOAN_PERSONAL_API_KEY` | every agent: the **agent's** key (Settings → API → Agent API Keys), so what the agents write is theirs. Seeding needs a person's key instead, which stays local as `NOAN_SEED_API_KEY` and is never a secret here; see *Start here* |
 | `RESEND_API_KEY` | every agent |
 | `ANTHROPIC_API_KEY` **or** `LLM_API_KEY` | every agent except the newsletter — either name works, see *Which model answers* |
 | `DATABASE_URL` | every agent except market research |
