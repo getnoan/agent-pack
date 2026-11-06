@@ -26,30 +26,61 @@ MARKDOWN_CHAR_CAP = 8000  # keeps per-source content bounded; full page rarely n
 
 
 class FirecrawlHTTPError(RuntimeError):
-    def __init__(self, status, body):
-        super().__init__(f"Firecrawl returned HTTP {status}: {body}")
+    def __init__(self, status, body, where):
+        super().__init__(f"Firecrawl returned HTTP {status}")
         self.status = status
         self.body = body
+        self.where = where
 
 
-def _firecrawl_post(path, payload):
+class FirecrawlCurlError(RuntimeError):
+    """curl itself failed. Deliberately not CalledProcessError, whose text is the full command."""
+
+    def __init__(self, exit_code, status, detail, where):
+        super().__init__(f"curl exited {exit_code}")
+        self.exit_code = exit_code
+        self.status = status
+        self.detail = detail
+        self.where = where
+
+
+class FirecrawlKeyError(RuntimeError):
+    pass
+
+
+def _curl_config(key):
+    """The auth header as curl config, written to curl's stdin so the key is never in its
+    argv, where ps, a traceback or anything logging the command could read it."""
+    key = key.strip()
+    if "\n" in key or "\r" in key:
+        raise FirecrawlKeyError("FIRECRAWL_API_KEY contains a line break")
+    escaped = key.replace("\\", "\\\\").replace('"', '\\"')
+    return f'header = "Authorization: Bearer {escaped}"\n'
+
+
+def _firecrawl_post(path, payload, where):
     # Shells out to curl rather than using urllib, matching the other automations'
     # fetch scripts in this project — relies on the system trust store, not Python's.
     key = os.environ["FIRECRAWL_API_KEY"]
     result = subprocess.run(
         [
-            "curl", "-s", "-w", "\n%{http_code}",
+            "curl", "-sS", "-w", "\n%{http_code}",
+            "--config", "-",
             "-X", "POST", f"{FIRECRAWL_BASE}{path}",
-            "-H", f"Authorization: Bearer {key}",
             "-H", "Content-Type: application/json",
             "-d", json.dumps(payload),
         ],
-        capture_output=True, text=True, check=True,
+        input=_curl_config(key), capture_output=True, text=True,
     )
     body, _, status = result.stdout.rpartition("\n")
+    if result.returncode != 0:
+        raise FirecrawlCurlError(result.returncode, status, result.stderr.strip(), where)
     if not status.startswith("2"):
-        raise FirecrawlHTTPError(status, body)
-    return json.loads(body)
+        raise FirecrawlHTTPError(status, body, where)
+    try:
+        return json.loads(body)
+    except json.JSONDecodeError:
+        raise FirecrawlHTTPError(status, "response was not JSON", where) from None
 
 
 def search(query, limit):
@@ -58,9 +89,10 @@ def search(query, limit):
         "limit": limit,
         "scrapeOptions": {"formats": ["markdown"], "onlyMainContent": True},
     }
-    response = _firecrawl_post("/search", payload)
+    where = {"url": f"{FIRECRAWL_BASE}/search", "query": query}
+    response = _firecrawl_post("/search", payload, where)
     if not response.get("success", False):
-        raise FirecrawlHTTPError("200-with-error", json.dumps(response))
+        raise FirecrawlHTTPError("200-with-error", json.dumps(response), where)
     accessed_at = datetime.now(timezone.utc).isoformat()
     results = []
     for item in response.get("data", []):
@@ -87,12 +119,28 @@ def main():
     print(json.dumps(search(query, limit), indent=2))
 
 
-if __name__ == "__main__":
+def _report_failure(report):
+    """Print one JSON error to stderr, with the key removed from anything a response echoed."""
+    text = json.dumps(report)
+    key = os.environ.get("FIRECRAWL_API_KEY", "").strip()
+    if key:
+        text = text.replace(json.dumps(key)[1:-1], "[redacted]")
+    print(text, file=sys.stderr)
+    sys.exit(1)
+
+
+def run():
     try:
         main()
+    except FirecrawlCurlError as e:
+        _report_failure({"error": "firecrawl_curl_error", "curl_exit": e.exit_code, "status": e.status, **e.where, "detail": e.detail})
     except FirecrawlHTTPError as e:
-        print(json.dumps({"error": "firecrawl_http_error", "status": e.status, "detail": e.body}), file=sys.stderr)
-        sys.exit(1)
+        _report_failure({"error": "firecrawl_http_error", "status": e.status, **e.where, "detail": e.body})
+    except FirecrawlKeyError as e:
+        _report_failure({"error": "bad_env_var", "detail": str(e)})
     except KeyError as e:
-        print(json.dumps({"error": "missing_env_var", "detail": str(e)}), file=sys.stderr)
-        sys.exit(1)
+        _report_failure({"error": "missing_env_var", "detail": str(e)})
+
+
+if __name__ == "__main__":
+    run()
