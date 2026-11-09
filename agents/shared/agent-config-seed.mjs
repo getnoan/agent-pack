@@ -74,7 +74,7 @@ export async function ensureBlock(stackId, title, description) {
  */
 export async function seedAgentFacts({ agent, blocks }, { log = console.log } = {}) {
   const me = await noanGet("/me");
-  log(`project: ${me?.project?.name ?? "?"} · identity: ${me?.identity?.email ?? "?"}`);
+  log(`project: ${me?.project?.name ?? "?"} · identity: ${me?.identity?.email || me?.identity?.name || "?"}`);
   log(`seeding starter facts for: ${agent}`);
 
   const { id: stackId } = await ensureAgentConfigStack({ log });

@@ -63,7 +63,7 @@ database, so you can watch an agent do real work before setting anything else
 up. Four keys and you are going: NOAN, your model, Resend and Firecrawl.
 
 ```bash
-cp .env.example .env      # add your four keys and MAIL_FROM
+cp .env.example .env      # add your keys
 node --env-file=.env agents/market-research-refresh/seed-market-research-refresh.mjs
 # add the two lines the seed script prints to .env, then:
 MARKET_RESEARCH_FORCE_RUN=1 DRY_RUN=1 node --env-file=.env agents/market-research-refresh/market-research-refresh-worker.mjs
@@ -81,7 +81,72 @@ unless the day of the month is 1 to 7, and it still exits cleanly. That is its m
 cadence: the workflow fires every Monday and only the first Monday does any work. Starting
 the workflow yourself from the Actions tab runs on any date.
 
-When you are happy, drop `DRY_RUN=1`.
+**Give the agent's key read and write, and leave its stacks on "All stacks".** The
+seed creates the Agent Config stack and its blocks, so the key needs write access to
+facts, and a key limited to specific stacks can't reach a stack made after it.
+
+When you are happy, run it with `DRY_RUN=0` in front instead. Dropping `DRY_RUN=1` from
+the command is not enough: `.env` sets it too, and that copy still holds.
+
+### Set up with a coding agent
+
+Using Claude Code, Codex, Cursor or similar? Tell it: *"Set up the weekly activity
+report from https://github.com/getnoan/agent-pack by following the 'Set up with a coding
+agent' section of its README."* The rest of this section is written for that agent.
+
+The weekly activity report is the easiest agent to start with. It only reads the
+workspace, saves one note and, once turned on, sends one email. It never changes a
+business fact. Work through the steps in order, check each one, and tell the person in a
+sentence what you did.
+
+**Ground rules**
+
+- Never ask for a key in the chat, and never print one. The person types keys into `.env`
+  themselves. Check a key by its length only:
+  `node --env-file=.env -e 'console.log((process.env.NOAN_PERSONAL_API_KEY||"").length)'`.
+- Every run is a dry run until the person says, in their own words, to send for real.
+- Don't edit anything under `agents/`. If something looks broken, report it.
+- `.env` is gitignored. Don't commit it or copy it anywhere.
+
+**Steps**
+
+1. **Check the machine.** `node --version` must be 22 or later, and `git` must work.
+   Nothing needs installing: the agents use only Node's standard library.
+2. **Get the code.** Clone this repository if you are not already in a clone, then
+   `cp .env.example .env`, unless `.env` already exists.
+3. **The person creates two keys**, in the NOAN app and a browser:
+   - The agent's key: Settings → Team → Agent creates their NOAN agent (once, as an
+     Owner), and Settings → API → Agent API Keys creates its key, with read and write on
+     every resource and stacks left on "All stacks". It goes in `NOAN_PERSONAL_API_KEY`.
+   - A model key, in `ANTHROPIC_API_KEY`. For another provider, see *Which model answers*.
+4. **Fill in `.env`.** Set `STATE_BACKEND=local` and delete the `DATABASE_URL` line, so
+   past runs are tracked in a file and no database is needed. Ask the person to paste
+   their two keys in, then check each one's length.
+5. **Seed:** `node --env-file=.env agents/weekly-activity-report/seed-weekly-activity-report.mjs`.
+   It creates the Agent Config stack and prints two `ACTIVITY_REPORT_…` lines. Copy them
+   into `.env`; they are not secret. Running it again is safe.
+6. **Dry run:**
+   `DRY_RUN=1 node --env-file=.env agents/weekly-activity-report/weekly-activity-report-worker.mjs`.
+   Show the person the report. A first run says it has no earlier week to compare
+   against; that is expected.
+7. **Send for real, only when asked.** The person needs a [Resend](https://resend.com)
+   key and a domain verified there; set `RESEND_API_KEY` and a `MAIL_FROM` on that
+   domain. They put a NOAN tag (for example `Weekly Report`) on their own contact; set
+   `REPORT_RECIPIENT_TAG` to its name. Then run step 6 with `DRY_RUN=0` in front.
+8. **Finish** by telling them: the report is saved as a note and emailed to the tagged
+   contacts; editing the two facts in the Agent Config stack changes the next run; and
+   *Running it on GitHub Actions* below makes it weekly, with a Postgres database
+   (Supabase's free tier is enough). Offer to walk them through it.
+
+**If something fails**
+
+| You see | Fix |
+|---|---|
+| `403 MissingPermission` while seeding | The agent's key needs write access to facts and its stacks left on "All stacks". Edit the key or create a new one |
+| `Unauthenticated` / `API Key missing` | A NOAN key did not load: check its length, and remove quotes or spaces around it |
+| `Missing required env var: …` | Fill in that line. For a dry run, `RESEND_API_KEY` and `MAIL_FROM` can keep their placeholders |
+| State or `DATABASE_URL` errors | Step 4 was skipped: `STATE_BACKEND=local`, no `DATABASE_URL` |
+| A near-empty report | A quiet week in the workspace. Say so; it is not a fault |
 
 ### Where things are
 
@@ -129,6 +194,10 @@ STATE_BACKEND=postgres
 DATABASE_URL=postgres://…      # any Postgres: Supabase, Neon, RDS, your own
 ```
 
+The agents reach it through `psql`, which GitHub's runners already have; install it
+if you run them anywhere else. The first save creates one table, `agent_state`, with
+row level security on, so a Supabase REST API does not publish it.
+
 No database? Supabase's free tier fits comfortably — the ledgers are a few
 kilobytes against a 500 MB limit. One thing to know: **free Supabase projects
 pause after a week of inactivity**, so if you only run the weekly agents,
@@ -140,6 +209,9 @@ file and needs no database at all.
 
 A missing ledger is treated as an error, never as a first run. That is
 deliberate: a lost ledger that looked like day one would re-send everything.
+The customer support and newsletter agents need theirs created first: run
+`seed-customer-support.mjs` and `seed-newsletter.mjs` with `STATE_BACKEND` and
+`DATABASE_URL` set. A run that finds none stops and says so.
 
 ## Running it on GitHub Actions
 
@@ -155,12 +227,12 @@ nothing run — until the secrets are there.
 
 | Secret | Needed by |
 |---|---|
-| `NOAN_PERSONAL_API_KEY` | every agent: the **agent's** key (Settings → API → Agent API Keys), so what the agents write is theirs |
+| `NOAN_PERSONAL_API_KEY` | every agent: the **agent's** key (Settings → API → Agent API Keys), so what the agents write is theirs. |
 | `RESEND_API_KEY` | every agent |
 | `ANTHROPIC_API_KEY` **or** `LLM_API_KEY` | every agent except the newsletter — either name works, see *Which model answers* |
 | `DATABASE_URL` | every agent except market research |
 | `FIRECRAWL_API_KEY` | market research |
-| `NEWSLETTER_UNSUB_SECRET` | newsletter |
+| `NEWSLETTER_UNSUB_SECRET` | newsletter: signs each unsubscribe link, and your site checks it with the same value |
 | `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` | sales deck, only if you want send-later |
 | `GOOGLE_SERVICE_ACCOUNT_JSON` | customer support, only to book meetings (see *Scheduling meetings*) |
 
@@ -172,8 +244,39 @@ the identity set under *Whose agents these are* below: `AGENT_NAME`,
 `AGENT_ALLOWED_LINKS`, `REPORT_RECIPIENT_TAG`, plus `MARKET_RESEARCH_STACK_SLUG`
 for market research if your stack is not titled "Market Research", and the people work is handed to: `PARK_ASSIGNEES_CS`,
 `PARK_ASSIGNEES_SALES`, `PARK_ASSIGNEES_ENG`, `HUMAN_IDENTITIES`,
-`FACT_ALIGNMENT_REVIEW_ASSIGNEES` and `REPLY_HUMAN_ASSIGNEES`. Every workflow forwards them; leave one unset and that
+`FACT_ALIGNMENT_REVIEW_ASSIGNEES` and `REPLY_HUMAN_ASSIGNEES`. For the newsletter:
+`NEWSLETTER_UNSUB_BASE` and `NEWSLETTER_TEST_RECIPIENT`, both required to send, and
+`NEWSLETTER_REPORT_TO` for a report after each send. Every workflow forwards them; leave one unset and that
 agent takes the cautious default.
+
+### Sending a newsletter
+
+An issue is one NOAN asset tagged `Newsletter`: its title is the subject, its
+description the headline, its text the body. The audience is everyone carrying a
+contact tag, minus anyone tagged `Unsubscribed`. Run `seed-newsletter.mjs` once
+first; it creates both tags and the ledger.
+
+It only runs when you press the button: **Actions → Newsletter → Run workflow**.
+Nothing here sends on a schedule, or because a tag was added.
+
+| Step | Set | What happens |
+|---|---|---|
+| 1 | `mode` dry-run | Counts the audience and shows the issue. Sends nothing |
+| 2 | `mode` test, `dry_run` 0 | Sends it to `NEWSLETTER_TEST_RECIPIENT`. Read it in your inbox |
+| 3 | `mode` live, `dry_run` 0 | Sends to the audience, once per contact. Refused unless this exact version had a test in the last 7 days |
+
+**You need an unsubscribe page before step 2.** Every issue carries a link, the pack
+does not host one, and the agent refuses to send without `NEWSLETTER_UNSUB_BASE`.
+Your site at that address must handle:
+
+- `GET /unsubscribe?c=<contact id>&t=<token>`, the link in the email
+- `POST /api/public/unsubscribe?c=<contact id>&t=<token>`, the one-click button in
+  mail clients, answering 200
+
+Both check that `t` is the first 32 hex characters of
+`hmac_sha256(NEWSLETTER_UNSUB_SECRET, contact id)`, then add the `Unsubscribed` tag to
+that contact through the NOAN API. `PATCH /contacts/{id}` replaces the tag list, so
+send the existing tags with the new one.
 
 ### Scheduling meetings
 

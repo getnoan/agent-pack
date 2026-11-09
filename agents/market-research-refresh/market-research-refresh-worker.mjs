@@ -28,6 +28,7 @@
  *   NOAN_PERSONAL_API_KEY, ANTHROPIC_API_KEY, RESEND_API_KEY, MAIL_FROM,
  *   FIRECRAWL_API_KEY                                                    required
  *   MARKET_RESEARCH_CONFIG_BLOCK_SLUG, MARKET_RESEARCH_PLAYBOOK_BLOCK_SLUG   required
+ *   MARKET_RESEARCH_STACK_SLUG  default: the stack titled "Market Research"
  *   MARKET_RESEARCH_MODEL       default "claude-opus-5"
  *   MARKET_RESEARCH_FORCE_RUN=1 bypass the first-Monday cadence gate (manual testing only)
  *   DRY_RUN=1                   still runs research + drafting, skips NOAN/email writes
@@ -41,15 +42,15 @@ import { unescapeUi } from "./ui-escaping.mjs";
 import { assertModelKey } from "../shared/anthropic.mjs";
 import { sendReportEmail } from "../shared/resend.mjs";
 import { renderReportEmailHtml } from "../shared/markdown-email.mjs";
-import { planResearch, draftBlocks, renderReport } from "./market-research-refresh-agent.mjs";
+import { findMarketResearchStack, planResearch, draftBlocks, renderReport } from "./market-research-refresh-agent.mjs";
 
 const CONFIG_SLUG = process.env.MARKET_RESEARCH_CONFIG_BLOCK_SLUG;
 const PLAYBOOK_SLUG = process.env.MARKET_RESEARCH_PLAYBOOK_BLOCK_SLUG;
 const DRY_RUN = process.env.DRY_RUN === "1";
 const FORCE_RUN = process.env.MARKET_RESEARCH_FORCE_RUN === "1";
 // The stack this agent maintains. MARKET_RESEARCH_STACK_SLUG names it; our own
-// is set in config.defaults.env, a downstream copy names theirs (the seed
-// script prints it). No slug is built in: a stack slug belongs to one workspace.
+// is set in config.defaults.env, and unset means the stack titled "Market Research"
+// (see findMarketResearchStack). No slug is built in: a stack slug belongs to one workspace.
 const MARKET_RESEARCH_STACK_SLUG = (process.env.MARKET_RESEARCH_STACK_SLUG || "").trim();
 const EXPECTED_BLOCK_TITLES = ["Company Context", "Culture Signals", "Category Dynamics", "Customer Insights"];
 // Grounding slug lists live in the Agent Config fact, per the agent standard (judgement lives in facts, not code) — so
@@ -64,7 +65,7 @@ const EXPECTED_BLOCK_TITLES = ["Company Context", "Culture Signals", "Category D
 // pricing blocks carry a workspace hash — come from MARKET_RESEARCH_GROUNDING_EXTRA_SLUGS.
 const DEFAULT_COMPANY_CONTEXT_GROUNDING = [
   "product-list", "product-strategy", "product-roadmap", "product-faq", "monetization-model",
-  "business-vision", "mission-vision", "value-proposition", "brand-positioning",
+  "mission-vision", "value-proposition", "brand-positioning",
   ...(process.env.MARKET_RESEARCH_GROUNDING_EXTRA_SLUGS || "").split(",").map(x => x.trim()).filter(Boolean),
 ];
 // Customer Insights is the ICP block, so it is anchored on the company's own decisions about
@@ -152,9 +153,7 @@ async function loadAgentBrain() {
 /* ---------------- resolve the Market Research stack + its 4 blocks ---------------- */
 
 async function resolveMarketResearchBlocks() {
-  const stacksRes = await noanGet(`/stacks?slug=${encodeURIComponent(MARKET_RESEARCH_STACK_SLUG)}`);
-  const stack = (stacksRes.items || [])[0];
-  if (!stack) throw new Error(`Market Research stack not found via GET /stacks?slug=${MARKET_RESEARCH_STACK_SLUG}`);
+  const stack = await findMarketResearchStack({ slug: MARKET_RESEARCH_STACK_SLUG, get: noanGet });
   const stackBlockSlugs = (stack.blocks || []).map(b => b.slug);
   if (!stackBlockSlugs.length) throw new Error(`Market Research stack ${stack.slug} has no blocks.`);
   const qs = stackBlockSlugs.map(s => `slug=${encodeURIComponent(s)}`).join("&");
