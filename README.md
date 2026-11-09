@@ -63,7 +63,7 @@ database, so you can watch an agent do real work before setting anything else
 up. Three keys and you are going.
 
 ```bash
-cp .env.example .env      # add your keys, and NOAN_SEED_API_KEY (below)
+cp .env.example .env      # add your keys
 node --env-file=.env agents/market-research-refresh/seed-market-research-refresh.mjs
 DRY_RUN=1 node --env-file=.env agents/market-research-refresh/market-research-refresh-worker.mjs
 ```
@@ -72,14 +72,9 @@ The seed script writes that agent's starter instructions into your NOAN
 project and prints the two `.env` lines to add. The worker then shows you
 exactly what it would post, without posting anything.
 
-**Seeding takes your own key, not the agent's.** It creates the Agent Config
-stack and its blocks, and NOAN lets only an Owner or Executive create stacks
-and blocks. Your NOAN agent is refused (`403 MissingPermission`) whatever its
-key's scopes. So put your own key (Settings → API) in `.env` as
-`NOAN_SEED_API_KEY`. The seed uses it; the agents never do and keep running on
-the agent's key in `NOAN_PERSONAL_API_KEY`. Once everything is seeded you can
-delete that line. The wizard handles this for you: it seeds with the key you
-give it first.
+**Give the agent's key read and write, and leave its stacks on "All stacks".** The
+seed creates the Agent Config stack and its blocks, so the key needs write access to
+facts, and a key limited to specific stacks can't reach a stack made after it.
 
 When you are happy, run it with `DRY_RUN=0` in front instead. Dropping `DRY_RUN=1` from
 the command is not enough: `.env` sets it too, and that copy still holds.
@@ -110,16 +105,14 @@ sentence what you did.
    Nothing needs installing: the agents use only Node's standard library.
 2. **Get the code.** Clone this repository if you are not already in a clone, then
    `cp .env.example .env`, unless `.env` already exists.
-3. **The person creates three keys**, in the NOAN app and a browser:
+3. **The person creates two keys**, in the NOAN app and a browser:
    - The agent's key: Settings → Team → Agent creates their NOAN agent (once, as an
-     Owner), and Settings → API → Agent API Keys creates its key. It goes in
-     `NOAN_PERSONAL_API_KEY`.
-   - Their own key, from Settings → API. It goes in `NOAN_SEED_API_KEY` and is used only
-     to seed (see above).
+     Owner), and Settings → API → Agent API Keys creates its key, with read and write on
+     every resource and stacks left on "All stacks". It goes in `NOAN_PERSONAL_API_KEY`.
    - A model key, in `ANTHROPIC_API_KEY`. For another provider, see *Which model answers*.
 4. **Fill in `.env`.** Set `STATE_BACKEND=local` and delete the `DATABASE_URL` line, so
    past runs are tracked in a file and no database is needed. Ask the person to paste
-   their three keys in, then check each one's length.
+   their two keys in, then check each one's length.
 5. **Seed:** `node --env-file=.env agents/weekly-activity-report/seed-weekly-activity-report.mjs`.
    It creates the Agent Config stack and prints two `ACTIVITY_REPORT_…` lines. Copy them
    into `.env`; they are not secret. Running it again is safe.
@@ -140,7 +133,7 @@ sentence what you did.
 
 | You see | Fix |
 |---|---|
-| `Seeding needs to create … only an Owner or Executive` | An Owner or Executive puts their own key in `NOAN_SEED_API_KEY` |
+| `403 MissingPermission` while seeding | The agent's key needs write access to facts and its stacks left on "All stacks". Edit the key or create a new one |
 | `Unauthenticated` / `API Key missing` | A NOAN key did not load: check its length, and remove quotes or spaces around it |
 | `Missing required env var: …` | Fill in that line. For a dry run, `RESEND_API_KEY` and `MAIL_FROM` can keep their placeholders |
 | State or `DATABASE_URL` errors | Step 4 was skipped: `STATE_BACKEND=local`, no `DATABASE_URL` |
@@ -225,7 +218,7 @@ nothing run — until the secrets are there.
 
 | Secret | Needed by |
 |---|---|
-| `NOAN_PERSONAL_API_KEY` | every agent: the **agent's** key (Settings → API → Agent API Keys), so what the agents write is theirs. Seeding needs a person's key instead, which stays local as `NOAN_SEED_API_KEY` and is never a secret here; see *Start here* |
+| `NOAN_PERSONAL_API_KEY` | every agent: the **agent's** key (Settings → API → Agent API Keys), so what the agents write is theirs. |
 | `RESEND_API_KEY` | every agent |
 | `ANTHROPIC_API_KEY` **or** `LLM_API_KEY` | every agent except the newsletter — either name works, see *Which model answers* |
 | `DATABASE_URL` | every agent except market research |
