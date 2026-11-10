@@ -13,7 +13,7 @@
  *   [Needs a decision] a judgement, a choice between sides, or an outside-system change
  *                      comes first; nothing is written on the strength of "go ahead" alone.
  */
-import { agentName, pronouns } from "./required-env.mjs";
+import { agentName, pronouns, repliesAreRead } from "./required-env.mjs";
 
 export const LABEL_SPECIFIC = "[Specific]";
 export const LABEL_DECISION = "[Needs a decision]";
@@ -28,6 +28,7 @@ export function labelForKind(kind) {
 /** The fixed closing line every report carries, so the reading of a reply is stated on the
  *  report itself rather than only in a playbook the reader may never open. */
 export function handleFooterText(example = "do A1") {
+  if (!repliesAreRead()) return `${LABEL_SPECIFIC} items are ready to act on as written; ${LABEL_DECISION} items need a human call first.`;
   return `Reply to this email naming items ("${example}", or "go ahead" for every ${LABEL_SPECIFIC} item) and ${agentName()} picks it up as a task. ${LABEL_SPECIFIC} items are ready to act on as written; ${LABEL_DECISION} items need a human call first — ${pronouns().subj} will ask, not guess.`;
 }
 

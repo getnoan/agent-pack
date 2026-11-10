@@ -34,6 +34,14 @@ export function envAddress(name) {
   return v || null;
 }
 
+/** Whether anything reads a reply to the mail these agents send. The reply
+ *  worker's config slug is what says so: a report can only promise that a reply
+ *  becomes a task where that worker is set up, and someone running one report
+ *  from the open-source pack has nothing on the other end of the inbox. */
+export function repliesAreRead() {
+  return Boolean((process.env.REPLY_CONFIG_BLOCK_SLUG || "").trim());
+}
+
 /* ---- Who the agents are, and who counts as a teammate ----
  *
  * Same rule as the addresses above: nothing about OUR company is a default in

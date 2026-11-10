@@ -34,18 +34,21 @@
  * stays the one place the fleet's answer vocabulary is written down, and so
  * test-respond-by.mjs can check them against the capabilities fact.
  */
-import { agentName, pronouns } from "./required-env.mjs";
+import { agentName, pronouns, repliesAreRead } from "./required-env.mjs";
+
+/* Where the reply worker isn't set up, a reply to a report reaches nobody. */
+const NO_REPLY_READER = "Act on what this names yourself: nothing picks up a reply to this report.";
 
 /* The agent's name and pronouns are read at access time (getters), so the
  * same sentences serve any fleet: AGENT_NAME and AGENT_PRONOUNS (e.g.
  * "she/her"; unset reads they/them). Object.keys/values still enumerate them. */
 export const RESPOND_BY = {
   get email() { return `Reply to this email and ${agentName()} picks it up as a task — your words first, this message quoted underneath as context.`; },
-  get report() { return `Reply to this email naming items ("do A1", or "go ahead" for every [Specific] item) and ${agentName()} picks it up as a task.`; },
+  get report() { if (!repliesAreRead()) return NO_REPLY_READER; return `Reply to this email naming items ("do A1", or "go ahead" for every [Specific] item) and ${agentName()} picks it up as a task.`; },
   get comment() { return `Comment on the task to steer ${pronouns().obj}: "@${agentName()} <what changed>", or the word the task names ("send", "retry") where it offers one.`; },
   get reassign() { return `Re-assign ${agentName()} on the task once you have fixed what it names — that is the hand-back, and ${pronouns().subj} ${pronouns().verb("pick")} it up on ${pronouns().poss} next poll.`; },
   get human() { return `Nothing comes back to ${agentName()} on this one — a person owns it end to end.`; },
-  get reportEmail() { return `Reply to the report email this task points at and ${agentName()} picks it up as a task; name items ("do A1") where the report numbers them.`; },
+  get reportEmail() { if (!repliesAreRead()) return NO_REPLY_READER; return `Reply to the report email this task points at and ${agentName()} picks it up as a task; name items ("do A1") where the report numbers them.`; },
 };
 
 /** Lanes whose hand-back is their own sentence, not one of the shapes. Each
