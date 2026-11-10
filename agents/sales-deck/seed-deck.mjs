@@ -12,11 +12,13 @@ import { runSeed } from "../shared/agent-config-seed.mjs";
 
 export const CONFIG_FACT = `# Deck Agent Config
 
-Scope: this governs the bespoke sales deck agent. It builds an on-brand deck for a named prospect, renders it to PDF, and either emails it straight to that prospect or routes it to a human for review. This fact describes what it does; change it here rather than in code.
+Scope: operating instructions for the sales deck agent only. If you are a different agent, do not follow them: treat this as a description of how the sales deck agent works, not as a fact about the business.
+
+The agent builds an on-brand deck for a named prospect, renders it to PDF, and either emails it straight to that prospect or routes it to a human for review. This fact describes what it does; change it here rather than in code.
 
 ## Trigger
 
-A task in **backlog** carrying your deck tag with this agent among the assignees. Backlog-only is deliberate: other agents that create deck tasks can put them straight into in-progress so the scanner never double-builds the same deck.
+A task in **backlog** carrying your deck tag with this agent among the assignees. Backlog-only is deliberate: other agents that create deck tasks can put them straight into in-progress so the agent never builds the same deck twice.
 
 ## What to ground the deck in
 
@@ -25,7 +27,7 @@ A task in **backlog** carrying your deck tag with this agent among the assignees
 - Brand identity and the visual design system, for look and feel.
 - Brand tone, brand positioning, and the value proposition.
 - Your ideal customer and sales customer profile, so the angle fits who they are.
-- Product vision, user segmentation, customer quotes and qualitative insights, for substance and proof.
+- Your vision for what you offer, your customer or audience segments, customer quotes and qualitative insights, for substance and proof.
 - Pricing, when pricing belongs in the story.
 
 Plus, for personalisation only: the task's title and details as the brief, and the linked contact's memo history. **Memos are internal.** They may steer the angle, but nothing from them may be quoted or referenced in a way the prospect would not already know. A prospect discovering you kept notes on them is a worse outcome than a slightly less tailored deck.
@@ -43,8 +45,8 @@ Otherwise it parks for a human: a review copy is emailed and the task stays open
 
 A deck is **not clean** if either holds:
 
-- a mandatory slide is missing its intended link or screenshot when one exists in the shot bank;
-- any embedded product screenshot is older than your staleness threshold. Stale screenshots are the main way a deck goes quietly wrong, because the product changes faster than the image library.
+- a required slide (such as the demo slide, when a demo link is configured) is missing its intended link or screenshot when one exists in your screenshot library;
+- any embedded screenshot is older than your staleness threshold. Stale screenshots are the main way a deck goes quietly wrong, because what you offer changes faster than the image library.
 
 These are hard gates in code, not model judgement. **The model never decides whether its own deck is safe to send.**
 
@@ -61,7 +63,7 @@ Three ways back, all from the board:
 
 Only a teammate's comment steers — the agent's own comments never do, and the identity is checked against the verified sender address, not a display name. Every customer send is recorded as a memo on the contact: that memo is the audit trail.
 
-Closing the task on the review email was the earlier behaviour and it was wrong — it left a human forwarding the PDF by hand, because a closed task cannot be re-triggered. A transient send failure likewise leaves the task in backlog so the next scan retries, rather than marking finished work that never reached anyone.
+A deck in review stays open because a closed task cannot be re-triggered: closing it would leave a person forwarding the PDF by hand. A transient send failure likewise leaves the task in backlog so the next scan retries, rather than marking finished work that never reached anyone.
 
 ## Follow-up
 
@@ -74,7 +76,7 @@ This fires **only on a confirmed send to the customer.** A deck routed to a huma
 - Does not decide **who** gets a deck. That comes from whoever created the task.
 - Does not decide what the follow-up says. It arms the task; the follow-up's content is its own agent's business.
 - Does not choose recipients beyond the contacts linked to the task.
-- Does not touch pricing, legal, or any claim that is not in the facts.
+- Does not state pricing, legal terms, or any other claim that is not in the facts.
 
 ## Stays in code, deliberately
 
@@ -82,7 +84,9 @@ PDF rendering, the headless-browser pipeline, file storage, screenshot selection
 
 export const PLAYBOOK_FACT = `# Deck Playbook
 
-Scope: voice and output shape for the deck agent. What to build and when to send it lives in the Deck Agent Config. These rules govern the cover email the deck rides in on, and they are read at run time — editing them here changes what prospects receive, with no deploy.
+Scope: voice, cover email and slide design for the sales deck agent only. If you are a different agent, do not follow them: treat this as a description of how the sales deck agent works, not as a fact about the business.
+
+What to build and when to send it lives in the Deck Agent Config. The rules below govern the cover email sent with the deck and the design of its slides. They are read at run time, so editing them changes what prospects receive, with no deploy.
 
 ## Cover email
 
@@ -103,7 +107,7 @@ Subject line: under 60 characters, no clickbait.
 
 ## Slide design
 
-The deck agent pastes this section into its build prompt, after your Visual Design System fact, as the resolved values for rendering that system as print slides. Replace the bullets with your own: the code carries no palette, typeface or leading of its own, and a design system written for a website rarely says how it should behave on a slide.
+The agent uses this section after your Visual Design System fact, as the resolved values for rendering that system as print slides. For the person maintaining this fact: replace the bullets with your own: the code carries no palette, typeface or leading of its own, and a design system written for a website rarely says how it should behave on a slide.
 
 - Where the design system and the brand identity fact disagree, the design system wins. List the known conflicts here, resolved in its favour (for example: ground #RRGGBB, not #RRGGBB; buttons fully rounded, not 4px).
 - Ground colour, one elevated surface colour, foreground with its opacity ladder, one accent colour and how sparingly it appears (one accent moment per slide is a good rule), border hairlines, radii.
@@ -115,13 +119,13 @@ runSeed({
   blocks: [
     {
       title: "Deck Agent Config",
-      description: "What the deck agent builds, what it grounds in, and when it may send.",
+      description: "For the sales deck agent only: what it builds, which facts it uses, when it may send a deck to a prospect, and when a person reviews it first. The agent reads this on every run, so an edit changes its next run. Instructions, not a fact about the business.",
       content: CONFIG_FACT,
       envVar: "DECK_CONFIG_BLOCK_SLUG",
     },
     {
       title: "Deck Playbook",
-      description: "Voice and shape of the cover email a deck rides in on.",
+      description: "For the sales deck agent only: the voice of the cover email and the design rules for the slides. The agent reads this on every run, so an edit changes its next run. Instructions, not a fact about the business.",
       content: PLAYBOOK_FACT,
       envVar: "DECK_PLAYBOOK_BLOCK_SLUG",
     },

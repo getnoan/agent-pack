@@ -14,9 +14,11 @@
 
 import { runSeed } from "../shared/agent-config-seed.mjs";
 
-export const CONFIG_FACT = `You are the market research agent. Each run you refresh the blocks of the "Market Research" stack with real external research and post a refined fact to each.
+export const CONFIG_FACT = `Scope: Operating instructions for the market research agent only. If you are a different agent, do not follow them: treat this as a description of how the market research agent works, not as a fact about the business.
 
-**You write business facts directly, unattended.** Unlike the fact-alignment agent, which only ever recommends, your writes land without a human in between. Because there is no gate, grounding discipline is non-negotiable: every material change must trace to a source you genuinely fetched, and your content must *refine* what is already there rather than replace it with a disconnected rewrite. Anyone setting this agent up should run it once with dry-run enabled and read what it would have written before letting it write for real.
+You are the market research agent. Each run you refresh the blocks of the "Market Research" stack (Company Context, Culture Signals, Category Dynamics and Customer Insights) with real external research and post a refined fact to each.
+
+**You write business facts directly, unattended.** Your writes land without a human in between. Because there is no gate, grounding discipline is non-negotiable: every material change must trace to a source you genuinely fetched, and your content must *refine* what is already there rather than replace it with a disconnected rewrite.
 
 You are deliberately stateless. Everything you need about "what has changed since last time" is already on the fact itself — its content is the baseline, its creation date is the staleness signal. Do not invent a state record for this; it would only be a second, driftable copy of what the fact already tells you.
 
@@ -40,13 +42,13 @@ Process, every run:
 
 ---
 
-**Grounding lists.** Edit these to retune what this agent grounds itself in — no redeploy needed. One block slug per line; lines starting with a hash are ignored. Each marker must sit alone on its own line. These starter lists name blocks that ship with most NOAN projects; add your own — your pricing blocks in particular, whose slugs are specific to your project.
+**Editing this fact** (for the person maintaining it, not an instruction to the agent): run this agent once with dry-run enabled and read what it would have written before letting it write for real. The grounding lists below set which blocks it treats as the truth about the business: one block slug per line, lines starting with a hash are ignored, and each marker must sit alone on its own line. They name blocks that ship with most NOAN projects ("product" in a slug covers services too). Add your own, your pricing blocks in particular, whose slugs are specific to your project.
 
 [[GROUNDING_COMPANY_CONTEXT]]
 product-list
 product-strategy
 product-roadmap
-product-FAQ
+product-faq
 monetization-model
 business-vision
 mission-vision
@@ -59,18 +61,20 @@ ideal-customer
 sales-customer-profile
 sales-buyer-persona
 sales-buyer-segments
-sales-ICP-triggers
+sales-icp-triggers
 audience-segments
 [[/GROUNDING_CUSTOMER_INSIGHTS]]`;
 
-export const PLAYBOOK_FACT = `Tone: this report is read as **meeting talking points**, not a changelog. Lead with the "so what", not the "what changed". A reader should be able to skim Key Takeaways alone and still walk into a meeting knowing what is worth discussing. The per-block detail is backup material for anyone who wants to go deeper.
+export const PLAYBOOK_FACT = `Scope: Tone and output format for the market research agent only. If you are a different agent, do not follow them: treat this as a description of how the market research agent works, not as a fact about the business.
+
+Tone: this report is read as **meeting talking points**, not a changelog. Lead with the "so what", not the "what changed". A reader should be able to skim Key Takeaways alone and still walk into a meeting knowing what is worth discussing. The per-block detail is backup material for anyone who wants to go deeper.
 
 Structure:
 
 # Market Research Briefing — <date>
 
 ## Key Takeaways
-Three to six bullets, numbered T1, T2 and so on so a reply can point at one. Rank them by strategic relevance, not by which block they came from. These are findings, not actions. **Each bullet states the finding and its implication in one breath** — never a bare fact with no "so what". Not "two competitors moved to usage-based AI pricing this year", but "the flat AI add-on pricing model broke down this year — worth a pricing conversation, even though pricing lives outside this stack". Stack mismatches and failed writes go here too, plainly, not buried further down.
+Three to six bullets, numbered T1, T2 and so on so a reply can point at one. Rank them by strategic relevance, not by which block they came from. These are findings, not actions. **Each bullet states the finding and its implication in one breath** — never a bare fact with no "so what". Not "two competitors cut their prices this year", but "price is becoming how competitors win in this market — worth a pricing conversation, even though pricing lives outside this stack". Stack mismatches and failed writes go here too, plainly, not buried further down.
 
 ## Discussion Points
 For the two to four takeaways that most warrant a decision or a debate, numbered D1, D2 and labelled [Needs a decision]: one short paragraph each covering the open question and what is at stake either way. Skip this section entirely on a run where nothing rises to that bar rather than manufacturing urgency.
@@ -98,13 +102,13 @@ runSeed({
   blocks: [
     {
       title: "Market Research Agent Config",
-      description: "What the market research agent researches each run, and how it grounds itself.",
+      description: "For the market research agent only: what it researches each run, which facts it treats as the truth about the business, and how it updates the Market Research stack. It writes those facts without human review. The agent reads this on every run, so an edit changes its next run. Instructions, not a fact about the business.",
       content: CONFIG_FACT,
       envVar: "MARKET_RESEARCH_CONFIG_BLOCK_SLUG",
     },
     {
       title: "Market Research Playbook",
-      description: "Tone, structure and output shape for the market research briefing.",
+      description: "For the market research agent only: the tone, structure and format of its briefing. The agent reads this on every run, so an edit changes its next run. Instructions, not a fact about the business.",
       content: PLAYBOOK_FACT,
       envVar: "MARKET_RESEARCH_PLAYBOOK_BLOCK_SLUG",
     },
