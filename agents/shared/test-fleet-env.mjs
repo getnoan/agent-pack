@@ -19,7 +19,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 const file = fileURLToPath(new URL("./config.defaults.env", import.meta.url));
-const FIXTURES = { AGENT_NAME: "Verity", AGENT_PRONOUNS: "she/her", TEAMMATE_DOMAIN: "getnoan.com" };
+const FIXTURES = { AGENT_NAME: "Verity", AGENT_PRONOUNS: "she/her", TEAMMATE_DOMAIN: "getnoan.com", REPLY_CONFIG_BLOCK_SLUG: "reply-config" };
 
 if (existsSync(file)) {
   for (const raw of readFileSync(file, "utf8").split(/\r?\n/)) {
