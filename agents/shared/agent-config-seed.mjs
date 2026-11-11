@@ -10,9 +10,10 @@
  *
  * DOCTRINE — idempotent and additive-only, and the distinction matters:
  *   - A block is created only when it is missing.
- *   - A fact is written ONLY when this code created the block in the same run.
- * POST /facts REPLACES a block's entire fact, so writing to a block we did not
- * create could destroy tuning a user did by hand. Re-running this is therefore
+ *   - A fact is written ONLY when this code created the block in the same run,
+ *     or the block is in the managed Agent Config stack and holds no fact yet.
+ * POST /facts REPLACES a block's entire fact, so writing to a block that holds
+ * one could destroy tuning a user did by hand. Re-running this is therefore
  * always safe: on a provisioned workspace it is a no-op that reports what it
  * found and changes nothing.
  *
@@ -53,17 +54,30 @@ If you are a person:
 - An edit changes the agent's next run. No deploy or code change is needed.
 - A section headed "Editing this fact" is a note for you. Everything else is read by the agent as its instructions.`;
 
+const sameTitle = (a, b) => (a || "").trim().toLowerCase() === (b || "").trim().toLowerCase();
+
 /**
- * Find the custom Agent Config stack, creating it if absent.
- * POST /stacks requires at least one block, so a placeholder block is supplied
- * on creation; callers then ensure their own blocks against the returned id.
+ * Find the Agent Config stack, creating it if absent.
+ * POST /stacks requires at least one block, so the Agent Index is supplied
+ * on creation; callers then ensure their own blocks against the returned stack.
  */
 export async function ensureAgentConfigStack({ log = console.log } = {}) {
-  const stacks = await noanGetAll("/stacks?custom_only=true");
-  const hit = (stacks || []).find(
-    s => (s.title || "").trim().toLowerCase() === STACK_TITLE.trim().toLowerCase()
-  );
-  if (hit) return { id: hit.id, created: false };
+  // ?title= is a partial match.
+  const stacks = (await noanGetAll(`/stacks?title=${encodeURIComponent(STACK_TITLE)}`))
+    .filter(s => sameTitle(s.title, STACK_TITLE));
+  // A custom stack keeps its blocks, and the managed one never goes in use beside it.
+  const custom = stacks.find(s => !s.managed);
+  if (custom) return { id: custom.id, created: false, managed: false, blocks: [] };
+
+  const managed = stacks.find(s => s.managed);
+  if (managed) {
+    // ensureBlock only sees blocks of stacks in use.
+    if (!managed.inUse) {
+      await noanPost(`/stacks/${managed.id}/use`, {});
+      log(`  added the managed "${STACK_TITLE}" stack to this project`);
+    }
+    return { id: managed.id, created: false, managed: true, blocks: managed.blocks };
+  }
 
   const res = await noanPost("/stacks", {
     title: STACK_TITLE,
@@ -84,17 +98,41 @@ export async function ensureAgentConfigStack({ log = console.log } = {}) {
   } catch (e) {
     log(`  could not seed "${AGENT_INDEX_TITLE}" (${e?.message || e}); add its fact in NOAN by hand`);
   }
-  return { id, created: true };
+  return { id, created: true, managed: false, blocks: [] };
 }
 
-/** Find a block by title within the project, creating it in `stackId` if absent. */
-export async function ensureBlock(stackId, title, description) {
+async function isEmptyBlock(block) {
+  const res = await noanGet(`/facts?block_id=${encodeURIComponent(block.id)}&per_page=1`);
+  return !(res?.items || []).length;
+}
+
+/** Find a block by title within the project, creating it in `stack` if absent. */
+export async function ensureBlock(stack, title, description, { fallback = {}, log = console.log } = {}) {
+  // An empty block in the managed stack counts as created, so it gets the starter fact.
+  const own = stack.managed ? stack.blocks.find(b => sameTitle(b.title, title)) : null;
+  if (own) return { slug: own.slug, created: await isEmptyBlock(own) };
+
   const blocks = await noanGetAll("/blocks?in_use_only=true");
-  const hit = (blocks || []).find(
-    b => (b.title || "").trim().toLowerCase() === title.trim().toLowerCase()
-  );
+  const hit = (blocks || []).find(b => sameTitle(b.title, title));
   if (hit) return { slug: hit.slug, created: false };
 
+  if (!stack.managed) return createBlockIn(stack.id, title, description);
+
+  // Managed stacks take no new blocks, so the rest of this run's go into one custom stack.
+  if (fallback.id) return createBlockIn(fallback.id, title, description);
+  const res = await noanPost("/stacks", {
+    title: STACK_TITLE,
+    description: STACK_DESCRIPTION,
+    blocks: [{ title, description }],
+  });
+  fallback.id = res?.stack?.id || res?.id;
+  const slug = (res?.stack?.blocks || []).find(b => sameTitle(b.title, title))?.slug;
+  if (!fallback.id || !slug) throw new Error(`could not create block "${title}" (no stack id or block slug in the create response)`);
+  log(`  the managed "${STACK_TITLE}" stack has no "${title}" block, so it went into a custom "${STACK_TITLE}" stack`);
+  return { slug, created: true };
+}
+
+async function createBlockIn(stackId, title, description) {
   const res = await noanPost(`/stacks/${stackId}/blocks`, { title, description });
   const slug = res?.block?.slug || res?.slug;
   if (!slug) throw new Error(`could not create block "${title}" (no slug in the create response)`);
@@ -114,12 +152,13 @@ export async function seedAgentFacts({ agent, blocks }, { log = console.log } = 
   log(`project: ${me?.project?.name ?? "?"} · identity: ${me?.identity?.email || me?.identity?.name || "?"}`);
   log(`seeding starter facts for: ${agent}`);
 
-  const { id: stackId } = await ensureAgentConfigStack({ log });
+  const stack = await ensureAgentConfigStack({ log });
+  const fallback = {};
   const env = {};
   let wrote = 0;
 
   for (const b of blocks) {
-    const { slug, created } = await ensureBlock(stackId, b.title, b.description);
+    const { slug, created } = await ensureBlock(stack, b.title, b.description, { fallback, log });
     env[b.envVar] = slug;
     if (created) {
       await noanPost("/facts", { blockSlug: slug, content: b.content });
