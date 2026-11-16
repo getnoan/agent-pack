@@ -72,8 +72,9 @@ MARKET_RESEARCH_FORCE_RUN=1 DRY_RUN=1 node --env-file=.env agents/market-researc
 The seed script writes that agent's starter instructions into your NOAN project and
 prints two `.env` lines, the Config and Playbook block slugs. Add them before the dry
 run, which stops without them. The stack the agent refreshes is the one titled
-"Market Research"; if yours has another name, set `MARKET_RESEARCH_STACK_SLUG` too.
-The seed script does not print that one. The worker then shows you exactly what it
+"Market Research", and the seed script creates it with its four blocks when your
+project has none. If yours has another name, set `MARKET_RESEARCH_STACK_SLUG` before
+seeding and the seed leaves stacks alone. The worker then shows you exactly what it
 would post, without posting anything.
 
 Keep `MARKET_RESEARCH_FORCE_RUN=1` for a run by hand. Without it the agent does nothing
