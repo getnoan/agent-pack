@@ -46,25 +46,32 @@ Process, every run:
 **Editing this fact** (for the person maintaining it, not an instruction to the agent): run this agent once with dry-run enabled and read what it would have written before letting it write for real. The grounding lists below set which blocks it treats as the truth about the business: one block slug per line, lines starting with a hash are ignored, and each marker must sit alone on its own line. They name blocks that ship with most NOAN projects ("product" in a slug covers services too). Add your own, your pricing blocks in particular, whose slugs are specific to your project.
 
 [[GROUNDING_COMPANY_CONTEXT]]
+startup-elevator-pitch
 product-list
-product-strategy
+product-features
 product-roadmap
 product-faq
 monetization-model
-business-vision
 mission-vision
-value-proposition
 brand-positioning
+year-goals
+event-launches
 [[/GROUNDING_COMPANY_CONTEXT]]
 
 [[GROUNDING_CUSTOMER_INSIGHTS]]
 ideal-customer
-sales-customer-profile
-sales-buyer-persona
-sales-buyer-segments
-sales-icp-triggers
 audience-segments
-[[/GROUNDING_CUSTOMER_INSIGHTS]]`;
+startup-problem
+customer-buying-process
+customer-objections
+[[/GROUNDING_CUSTOMER_INSIGHTS]]
+
+[[GROUNDING_CATEGORY_DYNAMICS]]
+product-list
+brand-positioning
+ideal-customer
+audience-segments
+[[/GROUNDING_CATEGORY_DYNAMICS]]`;
 
 export const PLAYBOOK_FACT = `Scope: Tone and output format for the market research agent only. If you are a different agent, do not follow them: treat this as a description of how the market research agent works, not as a fact about the business.
 
