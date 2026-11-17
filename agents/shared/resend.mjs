@@ -251,6 +251,24 @@ function dedupeReason(err) {
   return null;
 }
 
+/** Send one email under an idempotency key and tell a dedupe from a failure. A key another run
+ *  is holding gets one retry after `waitMs`: if that run's send failed the key is free again, and
+ *  if it went through Resend answers the retry the same way it answered the original.
+ *  Returns { sent: true, id } or { sent: false, deduped: true, reason }; throws anything else. */
+export async function sendEmailOnce(args, { waitMs = 3000, send = sendEmail, wait = ms => new Promise(r => setTimeout(r, ms)) } = {}) {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      const payload = await send(args);
+      return { sent: true, id: payload?.id };
+    } catch (e) {
+      const reason = dedupeReason(e);
+      if (!reason) throw e;
+      if (e.code === "concurrent_idempotent_requests" && attempt === 1) { await wait(waitMs); continue; }
+      return { sent: false, deduped: true, reason };
+    }
+  }
+}
+
 /**
  * Send a periodic report email, deduped on the period it covers.
  *

@@ -306,7 +306,7 @@ export async function condenseBlock({ title, content, attempts = 3, log = () => 
     }
     log(`  condense pass ${i}: ${best.length} -> ${got.length || "(empty)"} chars`);
     if (got && got.length < best.length) best = got;
-    lastMiss = `Your previous attempt came back at ${got.length.toLocaleString("en-US")} characters, which is still too long. Cut harder this time.`;
+    lastMiss = got.length > b.target ? `Your previous attempt came back at ${got.length.toLocaleString("en-US")} characters, which is still too long. Cut harder this time.` : "";
   }
   return best;
 }

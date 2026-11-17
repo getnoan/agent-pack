@@ -177,7 +177,7 @@ function buildSystemPrompt(brain) {
     `- A candidate aimed at a block that already has a fact uses an EXCERPT PAIR under the same rules as a contradiction, so every other line of that fact survives. Keep every existing restriction unless the source explicitly lifts it, and set applyRisk to loosens_restriction if it does.`,
     `- A note marked as a draft, plan or proposal records an intention, not what is happening. Do not write it up as current practice.`,
     `- Draft a gap to its stated block purpose. If your input can only support part of that purpose, say which part is missing in whyItMatters.`,
-    `- Do not raise a finding listed under "Dismissed findings" again unless a block it involves has an approval date later than the dismissal.`,
+    `- Do not raise a finding listed under "Dismissed findings" again.`,
     `- The summary is the only place you write freeform prose. Keep it to 2-5 short bullets, at most two sentences each — this is what a busy reader sees first, so lead with what's actually worth their attention, not an exhaustive restatement of every list below it.`,
   ].join("");
 }
@@ -197,7 +197,7 @@ function buildUserPrompt({ windowLabel, isFirstRun, inScopeBlocks, gapBlocks, ta
 
   const noteLines = notesCandidates.map((n, i) => `- [N${i + 1} · note ${n.id}, ${n.createdAt}] "${n.title || "(untitled)"}"\n  ${(n.content || "").slice(0, 2000)}`).join("\n\n") || "(none)";
 
-  const dismissedLines = dismissedFindings.map(d => `- ${d.label || d.id} (target ${d.blockSlug || "none"}), dismissed ${String(d.dismissedAt || "").slice(0, 10)}${d.reason ? `: ${d.reason}` : ""}`).join("\n") || "(none)";
+  const dismissedLines = dismissedFindings.map(d => `- ${d.label || d.id} (blocks ${(d.blockSlugs || []).join(", ") || "none"}), dismissed ${String(d.dismissedAt || "").slice(0, 10)}${d.reason ? `: ${d.reason}` : ""}`).join("\n") || "(none)";
 
   const anomalyLines = anomalies.map(a => `- blockSlug ${a.blockSlug} (${a.blockTitle || "unknown title"}) has a fact but is outside the in-scope stack set${a.note ? ` — ${a.note}` : ""}`).join("\n") || "(none)";
 
@@ -370,7 +370,8 @@ export function buildManifest({ windowKey, windowLabel, result, baseFactIdOf, cr
    *   "full"    — gaps/candidates: `content` is the block's whole replacement document.
    *   null      — nothing drafted (website findings, ungrounded gaps); never applicable.
    */
-  const add = (kind, index, { blockSlug, content, oldExcerpt, newExcerpt, label, blockedReason }) => {
+  // blockSlugs is every block the finding is about, which a dismissal is checked against.
+  const add = (kind, index, { blockSlug, blockSlugs = [], content, oldExcerpt, newExcerpt, label, blockedReason }) => {
     const slug = blockSlug || null;
     const body = content ?? null;
     const isExcerpt = Boolean(oldExcerpt) && Boolean(newExcerpt);
@@ -388,6 +389,7 @@ export function buildManifest({ windowKey, windowLabel, result, baseFactIdOf, cr
       index,
       label,
       blockSlug: slug,
+      blockSlugs: [...new Set([slug, ...blockSlugs].filter(Boolean))],
       mode,
       content: isExcerpt ? null : body,
       oldExcerpt: isExcerpt ? oldExcerpt : null,
@@ -403,6 +405,7 @@ export function buildManifest({ windowKey, windowLabel, result, baseFactIdOf, cr
 
   (result.gaps || []).forEach((g, i) => add("gap", i, {
     blockSlug: g.blockSlug,
+    blockSlugs: [g.blockSlug],
     content: g.recommendedContent,
     label: `${g.blockTitle} (${g.stackTitle})`,
     blockedReason: !g.recommendedContent ? "no drafted content — needs a human to fill in directly"
@@ -414,6 +417,7 @@ export function buildManifest({ windowKey, windowLabel, result, baseFactIdOf, cr
     const isEdit = c.resolution === "edit";
     add("contradiction", i, {
       blockSlug: isEdit ? c.targetBlockSlug : null,
+      blockSlugs: [c.blockASlug, c.blockBSlug],
       oldExcerpt: isEdit ? c.oldExcerpt : null,
       newExcerpt: isEdit ? c.newExcerpt : null,
       label: `${c.blockATitle} vs ${c.blockBTitle}`,
@@ -424,6 +428,7 @@ export function buildManifest({ windowKey, windowLabel, result, baseFactIdOf, cr
 
   (result.overlaps || []).forEach((o, i) => add("overlap", i, {
     blockSlug: o.targetBlockSlug,
+    blockSlugs: [o.blockASlug, o.blockBSlug],
     oldExcerpt: o.oldExcerpt,
     newExcerpt: o.newExcerpt,
     label: `${o.blockATitle} and ${o.blockBTitle}`,
@@ -451,6 +456,7 @@ export function buildManifest({ windowKey, windowLabel, result, baseFactIdOf, cr
   // so a reader can name one ("W2") the same way as any other finding.
   (websiteFindings || []).forEach((w, i) => add("website", i, {
     blockSlug: (w.blockSlugs || [])[0] || null,
+    blockSlugs: w.blockSlugs || [],
     content: null,
     label: w.subject,
     blockedReason: w.legalReviewOnly

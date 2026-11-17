@@ -62,7 +62,7 @@ import { runSupportAgent } from "./cs-agent.mjs";
 import { interpretInit, interpretReply, interpretCustomerAsk } from "./schedule-agent.mjs";
 import { freeBusy, computeSlots, slotStillFree, createEvent, calendarConfigured, CALENDAR_SECRET } from "./google-cal.mjs";
 import { parseScheduleFact } from "./slots.mjs";
-import { sendEmail } from "../shared/resend.mjs";
+import { sendEmail, sendEmailOnce } from "../shared/resend.mjs";
 import { supportScanCandidates, supportTaskContactId, supportCommentRearm, expiredCasesToSettle, expiredCaseAction, expiredCaseComment, caseTaskIds, caseAfterOutreach, approvedLinks, linksNotApproved, outreachSubject } from "./support-scan.mjs";
 import { steeringComments, normalizeComments, latestCursor, renderComments } from "../shared/task-comments.mjs";
 import { loadLocalState, saveLocalState, peekState } from "../shared/state-local.mjs";
@@ -422,8 +422,7 @@ async function escalate({ inbound, body, contact, reason, sourceTask = null }) {
   const subjectBase = `[${AGENT_NAME}] needs a human: ${inbound.subject || "(no subject)"}`;
   const subject = TEST_RECIPIENT ? `[TEST → ${ESCALATE_TO}] ${subjectBase}` : subjectBase;
 
-  // Resend 409s a key it has already taken, so an escalation for this id is sent or in flight.
-  await sendEmail({
+  const escalation = await sendEmailOnce({
     to,
     subject,
     html:
@@ -436,10 +435,8 @@ async function escalate({ inbound, body, contact, reason, sourceTask = null }) {
         ? `<p>The task is parked on the NOAN board: <strong>${String(sourceTask.title || sourceTask.id).slice(0, 120)}</strong> (${sourceTask.id}). Fix what the reason says, then re-assign ${AGENT_NAME} to it and ${pronouns().subj} ${pronouns().verb("pick")} it up on ${pronouns().poss} next poll.</p>`
         : `<p>Reply directly to them at: ${senderEmail}</p>`),
     idempotencyKey: `${AGENT_NAME}:escalate:${inbound.id}`,
-  }).catch(e => {
-    if (e.status !== 409 || !/idempotent/.test(e.code || "")) throw e;
-    log(`  escalation email for ${inbound.id} skipped: Resend already holds its key (${e.code})`);
   });
+  if (escalation.deduped) log(`  escalation email for ${inbound.id} skipped: ${escalation.reason}`);
 
   if (!sourceTask) try {
     const created = await noanPost(`/tasks`, {

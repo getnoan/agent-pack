@@ -197,7 +197,7 @@ ok("wiring: the outreach subject never falls back to the task title", /const sub
 ok("wiring: a sent outreach leaves a comment on its task", /postTaskComment\(task\.id, `Sent the \$\{resolved/.test(rw));
 
 ok("wiring: a task parked twice in a day with a new reason gets a new escalation key", /id: `task:\$\{task\.id\}:\$\{new Date\(\)\.toISOString\(\)\.slice\(0, 10\)\}:\$\{createHash\("sha256"\)\.update\(reason\)/.test(rw));
-ok("wiring: an escalation email Resend already took does not crash the run", /idempotencyKey: `\$\{AGENT_NAME\}:escalate:\$\{inbound\.id\}`,\s*\}\)\.catch\(e => \{\s*if \(e\.status !== 409/.test(rw));
+ok("wiring: an escalation email Resend already took does not crash the run", /= await sendEmailOnce\(\{[\s\S]{0,1500}idempotencyKey: `\$\{AGENT_NAME\}:escalate:\$\{inbound\.id\}`,\s*\}\);\s*if \(escalation\.deduped\)/.test(rw));
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

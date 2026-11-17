@@ -617,8 +617,7 @@ export async function tasksTagged(tagName, { status = null, getAll = noanGetAll,
   catch (e) { why = `lookup failed: ${e.message}`; }
   if (id) qs.set("tag_id", id);
   else log(`  warn: tag "${tagName}" unresolved (${why}) - reading tasks unfiltered`);
-  const rows = await getAll(`/tasks?${qs}`);
-  return [...new Map(rows.map(t => [t.id, t])).values()];
+  return getAll(`/tasks?${qs}`);
 }
 
 /* ---------------- task idempotency ---------------- */

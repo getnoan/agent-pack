@@ -201,10 +201,23 @@ export function resolveDismissals(dismissTasks, manifests, existing = [], nowIso
   for (const d of dismissTasks) {
     const entry = entries.find(e => e.id.toLowerCase() === d.id.toLowerCase());
     if (!entry) { unresolved.push(d); continue; }
-    byId.set(entry.id, { id: entry.id, label: entry.label, blockSlug: entry.blockSlug, reason: d.reason || "", dismissedAt: nowIso });
+    const blockSlugs = entry.blockSlugs || [entry.blockSlug].filter(Boolean);
+    byId.set(entry.id, { id: entry.id, label: entry.label, blockSlugs, reason: d.reason || "", dismissedAt: nowIso });
     resolved.push(d);
   }
   return { dismissedFindings: [...byId.values()].slice(-DISMISSED_FINDINGS_KEPT), resolved, unresolved };
+}
+
+/** Pure: a dismissal holds until a fact on one of its blocks is approved after it. A row that
+ *  names no block can never be checked, so it expires and the finding can be raised again. */
+export function liveDismissals(dismissed, approvedAtOf) {
+  const kept = [], expired = [];
+  for (const d of dismissed || []) {
+    const slugs = d.blockSlugs || [d.blockSlug].filter(Boolean);
+    const changed = !slugs.length || slugs.some(s => (approvedAtOf(s) || "") > (d.dismissedAt || ""));
+    (changed ? expired : kept).push(d);
+  }
+  return { kept, expired };
 }
 
 // The prefix above is anchored and bracketed, so "Fact candidate: ..." — or the same title
@@ -411,7 +424,7 @@ async function main() {
 
   // 2. Candidates
   const { markStackTasks, markEmptyTasks, dismissTasks, genericCandidateTasks, malformedCaptures } = await loadCaptureQueue();
-  const { dismissedFindings, resolved: resolvedDismissals, unresolved: unresolvedDismissals } = resolveDismissals(dismissTasks, prior.manifests, Array.isArray(prior.dismissedFindings) ? prior.dismissedFindings : [], nowIso);
+  const { dismissedFindings: ruledFindings, resolved: resolvedDismissals, unresolved: unresolvedDismissals } = resolveDismissals(dismissTasks, prior.manifests, Array.isArray(prior.dismissedFindings) ? prior.dismissedFindings : [], nowIso);
   if (unresolvedDismissals.length) log(`  warn: ${unresolvedDismissals.length} dismissal(s) name an id no retained report has, left open: ${unresolvedDismissals.map(d => d.id).join(", ")}`);
   const allNotesInWindow = await fetchNotesInWindow(windowStartIso, windowEndIso);
   const notesCandidates = allNotesInWindow.filter(n => !skipNoteFromScan(n.title, n.content));
@@ -424,6 +437,8 @@ async function main() {
 
   const { stackTitleBySlug, inScopeBlocks } = await loadScope(updatedRelevantStackSlugs);
   const factsByBlock = await loadAllFacts();
+  const { kept: dismissedFindings, expired: expiredDismissals } = liveDismissals(ruledFindings, slug => factsByBlock.get(slug)?.approvedAt);
+  if (expiredDismissals.length) log(`  ${expiredDismissals.length} dismissal(s) expired, a fact they involve changed since: ${expiredDismissals.map(d => d.id).join(", ")}`);
   // Every fact in the project, in scope or not: a fact past the cap cannot be rewritten once it
   // is enforced, wherever it lives (fact-size-check.mjs).
   const factSizes = factSizeFindings([...factsByBlock.values()], { registry: registrySlugs() });
