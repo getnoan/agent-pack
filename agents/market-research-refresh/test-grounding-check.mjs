@@ -48,5 +48,27 @@ ok("task text names the block, both agents and the why, within the caps",
 const dry = await checkGrounding({ agents: ["customer support"], dryRun: true, deps: { ...deps, post: async () => { throw new Error("must not post"); } } });
 ok("dry run files nothing and says what it would file", dry.filed.every(f => f.action !== "filed") && dry.filed.some(f => f.action === "would file"));
 
+// 4. a block whose stack the project has not added: the task says to add the stack first
+{
+  const stacks = [
+    { title: "Products and Services", inUse: false, blocks: [{ slug: "product-faq", title: "Product FAQs" }, { slug: "product-features", title: "Features" }] },
+    { title: "Company", inUse: true, blocks: [{ slug: "product-list", title: "Product List" }] },
+  ];
+  const sent = [];
+  const withStacks = { ...deps, findTask: async () => null, post: async (p, body) => { sent.push(body); return { task: { id: `s${sent.length}` } }; }, getAll: async (p) => p.startsWith("/stacks") ? stacks : [] };
+  const lines = [];
+  const s1 = await checkGrounding({ agents: ["customer support"], deps: withStacks, log: l => lines.push(l) });
+  const faq = sent.find(b => b.externalId === "grounding:product-faq"), list = sent.find(b => b.externalId === "grounding:product-list");
+  ok("a gap in a stack not yet added asks for the stack first, by name",
+     /^Add the "Products and Services" stack and fill "Product FAQs"/.test(faq?.title || "") && /has not added yet/.test(faq.details) && /Explore/.test(faq.details));
+  ok("a gap in a stack in use is a plain fill task", /^Fill "Product List"/.test(list?.title || "") && !/has not added yet/.test(list.details));
+  ok("the log says which stack is missing", lines.some(l => /Product FAQs \(product-faq\) EMPTY, stack "Products and Services" not added/.test(l)));
+  ok("rows carry the stack for the wizard", s1.gaps.find(g => g.slug === "product-faq")?.stackInUse === false);
+
+  sent.length = 0;
+  const s2 = await checkGrounding({ agents: ["customer support"], deps: { ...withStacks, getAll: async () => { throw new Error("403"); } }, log: () => {} });
+  ok("an unreadable stack list still files plain fill tasks", s2.gaps.length === 2 && sent.every(b => /^Fill /.test(b.title)));
+}
+
 console.log(`\n${fail ? "FAILED" : "PASSED"}  ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -5,10 +5,10 @@
  * The agents' operating instructions live in the Agent Config facts, but the
  * agents also ground their work in BUSINESS facts — the product FAQ the support
  * agent answers from, the positioning and ideal-customer blocks the deck and the
- * market research are written against. Those are managed blocks every workspace
- * has, so nothing needs creating; but they start empty, and an agent grounded in
- * an empty block fails quietly: support escalates everything, research writes
- * from nothing, decks come out thin. Nobody is told why.
+ * market research are written against. Those are managed blocks, so nothing needs
+ * creating; but they start empty, and most sit in stacks a new project has not
+ * added yet. An agent grounded in an empty block fails quietly: support escalates
+ * everything, research writes from nothing, decks come out thin. Nobody is told why.
  *
  * This turns that into work on the board. For every block an agent reads that
  * holds no fact, it files ONE task — "Fill Product FAQs so the customer support
@@ -25,7 +25,7 @@
 import { readFileSync, existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { noanGet, noanPost, noanPut, findTaskByExternalId, isAgentIdentity, assignResolvedOwner } from "./noan.mjs";
+import { noanGet, noanGetAll, noanPost, noanPut, findTaskByExternalId, isAgentIdentity, assignResolvedOwner } from "./noan.mjs";
 import { DESIGN_DIR } from "./pack-paths.mjs";
 
 /** The deck's slugs come from its config (design/config.json, else the example). */
@@ -75,12 +75,23 @@ async function inspect(slug, deps) {
   return { slug, title, filled: content.length > 0, chars: content.length };
 }
 
+/** Which stack each block is in, and whether the project has added that stack. Every managed
+ *  stack is listed, but a block only surfaces its fact once its stack is in use. */
+async function stackOfBlocks(deps) {
+  const stacks = deps.getAll ? await deps.getAll("/stacks?per_page=100") : ((await deps.get("/stacks?per_page=100"))?.items || []);
+  const bySlug = new Map();
+  for (const st of stacks || []) for (const b of st.blocks || []) bySlug.set(b.slug, { title: b.title, stackTitle: st.title, stackInUse: st.inUse !== false });
+  return bySlug;
+}
+
 export function taskFor(gap, agents) {
   const names = agents.map(a => `${a} agent`).join(" and the ");
   const why = GROUNDING[agents[0]].why;
-  const title = `Fill "${gap.title}" so the ${names} can ${why}`.slice(0, 250);
+  const addStack = gap.stackInUse === false;
+  const title = `${addStack ? `Add the "${gap.stackTitle}" stack and fill` : "Fill"} "${gap.title}" so the ${names} can ${why}`.slice(0, 250);
   const details = [
     `The block "${gap.title}" (slug ${gap.slug}) holds no fact, and the ${names} read${agents.length > 1 ? "" : "s"} it every run.`,
+    ...(addStack ? [`It is in the "${gap.stackTitle}" stack, which this project has not added yet, so it cannot hold a fact. Add the stack from Explore in the NOAN app first, then fill the block.`] : []),
     `Until it is filled: ${agents.map(a => `the ${a} agent cannot ${GROUNDING[a].why}`).join("; ")}.`,
     ``,
     `Write it as a reference entry, not an answer: a lead sentence that stands alone, then short labelled sections, and an "As of <date>" line on anything that can go stale. One truth per block; if the same claim already lives elsewhere, point at it rather than repeating it.`,
@@ -97,6 +108,7 @@ export function taskFor(gap, agents) {
 export async function checkGrounding({ agents = Object.keys(GROUNDING), dryRun = false, log = () => {}, deps = null } = {}) {
   deps = deps || {
     get: noanGet,
+    getAll: noanGetAll,
     post: noanPost,
     assign: async (taskId, id) => noanPut(`/tasks/${taskId}/assignees`, { assigneeIds: [id] }),
     findTask: findTaskByExternalId,
@@ -105,10 +117,15 @@ export async function checkGrounding({ agents = Object.keys(GROUNDING), dryRun =
   };
   const bySlug = new Map();
   for (const a of agents) for (const s of GROUNDING[a]?.slugs || []) { if (!bySlug.has(s)) bySlug.set(s, []); bySlug.get(s).push(a); }
+  let stackOf = new Map();
+  try { stackOf = await stackOfBlocks(deps); } catch (e) { log(`  warn: could not read stacks (${e.message}), so a task cannot say which stack to add`); }
   const rows = [];
-  for (const slug of bySlug.keys()) rows.push({ ...(await inspect(slug, deps)), agents: bySlug.get(slug) });
+  for (const slug of bySlug.keys()) {
+    const r = await inspect(slug, deps), st = stackOf.get(slug);
+    rows.push({ ...r, title: st?.title || r.title, stackTitle: st?.stackTitle || null, stackInUse: st ? st.stackInUse : null, agents: bySlug.get(slug) });
+  }
   const gaps = rows.filter(r => !r.filled);
-  for (const r of rows) log(`  ${r.filled ? "✓" : "·"} ${r.title} (${r.slug}) ${r.filled ? `${r.chars} chars` : "EMPTY"} — ${r.agents.join(", ")}`);
+  for (const r of rows) log(`  ${r.filled ? "✓" : "·"} ${r.title} (${r.slug}) ${r.filled ? `${r.chars} chars` : r.stackInUse === false ? `EMPTY, stack "${r.stackTitle}" not added` : "EMPTY"} — ${r.agents.join(", ")}`);
   const filed = [];
   if (gaps.length) {
     let me;   // undefined = not asked yet; null = no person to self-assign to
@@ -142,7 +159,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   const log = json ? () => {} : (s) => console.log(s);
   log(`grounding check — ${agents.join(", ")}${dryRun ? " (dry run)" : ""}`);
   const r = await checkGrounding({ agents, dryRun, log });
-  if (json) console.log(JSON.stringify({ agents, gaps: r.gaps.map(g => ({ slug: g.slug, title: g.title, agents: g.agents })), filed: r.filed }));
+  if (json) console.log(JSON.stringify({ agents, gaps: r.gaps.map(g => ({ slug: g.slug, title: g.title, stack: g.stackTitle, stackInUse: g.stackInUse, agents: g.agents })), filed: r.filed }));
   else {
     log(r.gaps.length ? `\n${r.gaps.length} block(s) the agents read hold no fact:` : "\nEvery block the agents read holds a fact.");
     for (const f of r.filed) log(`  ${f.action}: ${f.title || f.slug}${f.taskId ? ` (task ${f.taskId})` : ""}`);
