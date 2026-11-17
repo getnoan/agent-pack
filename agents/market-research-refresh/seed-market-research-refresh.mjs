@@ -12,7 +12,8 @@
  * Run:  node --env-file=.env seed-market-research-refresh.mjs
  */
 
-import { runSeed } from "../shared/agent-config-seed.mjs";
+import { seedAgentFacts } from "../shared/agent-config-seed.mjs";
+import { noanGetAll, noanPost } from "../shared/noan.mjs";
 
 export const CONFIG_FACT = `Scope: Operating instructions for the market research agent only. If you are a different agent, do not follow them: treat this as a description of how the market research agent works, not as a fact about the business.
 
@@ -45,25 +46,32 @@ Process, every run:
 **Editing this fact** (for the person maintaining it, not an instruction to the agent): run this agent once with dry-run enabled and read what it would have written before letting it write for real. The grounding lists below set which blocks it treats as the truth about the business: one block slug per line, lines starting with a hash are ignored, and each marker must sit alone on its own line. They name blocks that ship with most NOAN projects ("product" in a slug covers services too). Add your own, your pricing blocks in particular, whose slugs are specific to your project.
 
 [[GROUNDING_COMPANY_CONTEXT]]
+startup-elevator-pitch
 product-list
-product-strategy
+product-features
 product-roadmap
 product-faq
 monetization-model
-business-vision
 mission-vision
-value-proposition
 brand-positioning
+year-goals
+event-launches
 [[/GROUNDING_COMPANY_CONTEXT]]
 
 [[GROUNDING_CUSTOMER_INSIGHTS]]
 ideal-customer
-sales-customer-profile
-sales-buyer-persona
-sales-buyer-segments
-sales-icp-triggers
 audience-segments
-[[/GROUNDING_CUSTOMER_INSIGHTS]]`;
+startup-problem
+customer-buying-process
+customer-objections
+[[/GROUNDING_CUSTOMER_INSIGHTS]]
+
+[[GROUNDING_CATEGORY_DYNAMICS]]
+product-list
+brand-positioning
+ideal-customer
+audience-segments
+[[/GROUNDING_CATEGORY_DYNAMICS]]`;
 
 export const PLAYBOOK_FACT = `Scope: Tone and output format for the market research agent only. If you are a different agent, do not follow them: treat this as a description of how the market research agent works, not as a fact about the business.
 
@@ -97,7 +105,47 @@ Don't:
 - Don't put raw URLs or citation markers anywhere outside Sources.
 - Don't pad. A quiet quarter in a market is a real finding; say it.`;
 
-runSeed({
+// The worker matches these four titles exactly and refreshes the stack titled
+// "Market Research" unless MARKET_RESEARCH_STACK_SLUG names another one.
+const RESEARCH_STACK = {
+  title: "Market Research",
+  description: "Strategic market research across four dimensions: company, culture, category and customer.",
+  blocks: [
+    {
+      title: "Company Context",
+      description: "A concise, research-driven snapshot of your own organization's current state, including mission, values, unique capabilities and recent strategic moves. Focused on internal realities and self-assessment, not just the 'about us' basics.",
+    },
+    {
+      title: "Culture Signals",
+      description: "The prevailing cultural trends, values and behavioral shifts shaping your market and influencing your audience, including societal attitudes, emerging subcultures and macro trends that could affect demand, messaging or fit.",
+    },
+    {
+      title: "Category Dynamics",
+      description: "The competitive landscape, category conventions and market structure: key players, emerging disruptors, category norms, pricing models and whitespace opportunities. Focused on how the category is evolving and where your business fits.",
+    },
+    {
+      title: "Customer Insights",
+      description: "A research-driven profile of your ideal customer: unmet needs, decision drivers, pain points and aspirations in light of current market realities. Goes beyond demographics to capture motivations and evolving expectations.",
+    },
+  ],
+};
+
+// The blocks start empty: the agent researches an empty block from scratch on its first run.
+async function ensureResearchStack(log = console.log) {
+  if ((process.env.MARKET_RESEARCH_STACK_SLUG || "").trim()) return;
+  // ?title= is a partial match.
+  const found = (await noanGetAll(`/stacks?title=${encodeURIComponent(RESEARCH_STACK.title)}`))
+    .some(st => (st.title || "").trim().toLowerCase() === RESEARCH_STACK.title.toLowerCase());
+  if (found) {
+    log(`\n"${RESEARCH_STACK.title}" stack already exists, left untouched.`);
+    return;
+  }
+  const res = await noanPost("/stacks", RESEARCH_STACK);
+  if (!(res?.stack?.id || res?.id)) throw new Error(`could not create the "${RESEARCH_STACK.title}" stack (no id in the create response)`);
+  log(`\nCreated the "${RESEARCH_STACK.title}" stack with its four blocks, empty until the agent's first run.`);
+}
+
+seedAgentFacts({
   agent: "market research refresh",
   blocks: [
     {
@@ -113,4 +161,9 @@ runSeed({
       envVar: "MARKET_RESEARCH_PLAYBOOK_BLOCK_SLUG",
     },
   ],
-});
+})
+  .then(() => ensureResearchStack())
+  .catch(e => {
+    console.error(e?.message || e);
+    process.exit(1);
+  });
