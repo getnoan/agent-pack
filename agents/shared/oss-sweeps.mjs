@@ -116,7 +116,7 @@ export const SHIPPED_TESTS = [
  *
  *  ONE source, spliced into both, for the reason UUID is spliced rather than written twice:
  *  the copies drift, and the weaker of the two is always the one that ships. */
-const POINTERS = String.raw`(?<![\w:;#])#\d{3,4}\b(?![0-9a-fA-F;'"])|fleet loop task|\b(?:run|job) [0-9]{6,}\b|\b[A-Z][A-Z0-9-]+-PLAN\.md\b|VERITY-AGENT-STANDARD|AGENT-IDENTITY-STANDARD|\b(?:notes?|tasks?) [0-9a-f]{8}\b|getnoan\/[a-z-]+#\d+|\bnoan#\d+|\bcommit [0-9a-f]{7,40}\b|\(\s*[0-9a-f]{7,40}\s*\)`;
+const POINTERS = String.raw`(?<![\w:;#])#\d{3,4}\b(?![0-9a-fA-F;'"])|fleet loop task|\b(?:run|job) [0-9]{6,}\b|\b[A-Z][A-Z0-9-]+-PLAN\.md\b|VERITY-AGENT-STANDARD|AGENT-IDENTITY-STANDARD|\b(?:notes?|tasks?) [0-9a-f]{8}\b|getnoan\/[a-z-]+#\d+|getnoan\/[a-z-]+ [0-9a-f]{7,40}\b|\bnoan#\d+|\bcommit [0-9a-f]{7,40}\b|\(\s*[0-9a-f]{7,40}\s*\)`;
 export const PRIVATE_POINTER_NO_ID = new RegExp(POINTERS);
 /** Pointers into private history that mean nothing to a stranger. */
 export const PRIVATE_POINTER = new RegExp(POINTERS + "|" + UUID);

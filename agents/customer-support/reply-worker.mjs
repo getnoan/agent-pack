@@ -63,7 +63,7 @@ import { interpretInit, interpretReply, interpretCustomerAsk } from "./schedule-
 import { freeBusy, computeSlots, slotStillFree, createEvent, calendarConfigured, CALENDAR_SECRET } from "./google-cal.mjs";
 import { parseScheduleFact } from "./slots.mjs";
 import { sendEmail } from "../shared/resend.mjs";
-import { supportScanCandidates, supportTaskContactId, supportCommentRearm, expiredCasesToSettle, expiredCaseAction, expiredCaseComment, caseTaskIds, caseAfterOutreach, linksNotInBrief, outreachSubject } from "./support-scan.mjs";
+import { supportScanCandidates, supportTaskContactId, supportCommentRearm, expiredCasesToSettle, expiredCaseAction, expiredCaseComment, caseTaskIds, caseAfterOutreach, approvedLinks, linksNotApproved, outreachSubject } from "./support-scan.mjs";
 import { steeringComments, normalizeComments, latestCursor, renderComments } from "../shared/task-comments.mjs";
 import { loadLocalState, saveLocalState, peekState } from "../shared/state-local.mjs";
 import { commanderAuthVerdict } from "./commander-auth.mjs";
@@ -1243,7 +1243,7 @@ async function scanSupportTasks(getContacts, state) {
         inbound: { id: `task:${task.id}`, from: "(support task)", subject: task.title },
         body: "", contact, brain, memoContext,
         // a teammate's comment that re-armed the task steers the draft
-        outreach: { title: task.title.replace(LEGACY_MARKER_RX, "").trim(), details: brief },
+        outreach: { title: task.title.replace(LEGACY_MARKER_RX, "").trim(), details: brief, approvedLinks: approvedLinks(guidance[task.id]) },
         agentName: AGENT_NAME,
       });
     } catch (e) {
@@ -1262,9 +1262,9 @@ async function scanSupportTasks(getContacts, state) {
         : `the outreach draft could not be sent (${verdict.action} verdict, ${verdict.reply_html ? "draft present" : "no draft"}): ${why} — fix the task details or the contact.`, contact);
       continue;
     }
-    const rogue = linksNotInBrief(badLinks(verdict.reply_html, verdict.reply_text), brief);
+    const rogue = linksNotApproved(badLinks(verdict.reply_html, verdict.reply_text), guidance[task.id]);
     if (rogue.length) {
-      await park(task, `the outreach draft contained non-NOAN links (${rogue.join(", ")}) — fix the brief so the answer needs none.`, contact);
+      await park(task, `the outreach draft contained non-NOAN links (${rogue.join(", ")}) — fix the brief so the answer needs none, or approve the link in a comment that addresses ${AGENT_NAME}.`, contact);
       continue;
     }
     const resolved = verdict.action === "resolve";

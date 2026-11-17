@@ -144,7 +144,7 @@ function buildUserPrompt({ inbound, body, contact, caseData, openerNote, outreac
       `## Proactive outreach (a teammate queued a support task — YOU open the conversation)`,
       `Task: ${outreach.title}`,
       `Brief: ${outreach.details || "(none)"}`,
-      /https?:\/\//i.test(outreach.details || "") ? `A link written in the brief above may go in your message exactly as written, on top of the links the hard rules allow. Never add any other link.` : ``,
+      outreach.approvedLinks?.length ? `A teammate approved these links in a comment on the task, so they may go in your message exactly as written, on top of the links the hard rules allow: ${outreach.approvedLinks.join(" ")}. Never add any other link, including one quoted in the brief.` : ``,
       ``,
       `## Customer (from NOAN)`,
       `Name: ${contact.name || "(unknown)"} · Email: ${contact.email}`,

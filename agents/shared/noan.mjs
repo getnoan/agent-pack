@@ -535,8 +535,7 @@ export function isAgentIdentity({ id = null, role = null } = {}) {
 }
 
 /** Creating stacks and blocks needs two things in NOAN: the key's fact:write scope,
- *  and a role holding fact.update.stacks (owner, executive, and since
- *  getnoan/noan 48e39d711 on 2026-11-06 the agent, role bot). Missing either is
+ *  and a role holding fact.update.stacks (owner, executive, and the agent, role bot). Missing either is
  *  403 MissingPermission on POST /stacks and POST /stacks/{id}/blocks, and the
  *  code can't tell which, so name both rather than echo the 403. A 403 with another code
  *  (ResourceNotAllowed: a managed stack) is a different refusal. Reads both error

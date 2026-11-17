@@ -174,14 +174,14 @@ ok("wiring: closing a case closes every task it carries", /async function closeC
 ok("wiring: a dry run sends no outreach and parks nothing", /if \(DRY_RUN\) \{ log\(`  dry-run: would park/.test(rw) && /dry-run: would send the \$\{verdict\.action\} outreach/.test(rw));
 ok("wiring: an expired case parks every task it carries", /async function settleExpiredCaseTasks[\s\S]{0,800}caseTaskIds\(kase\)/.test(rw));
 
-const { linksNotInBrief } = await import("./support-scan.mjs");
+const { linksNotApproved, approvedLinks } = await import("./support-scan.mjs");
 const preview = "https://p-1664874c594b--example-previews.netlify.app";
-const brief = `Send it verbatim.\n\nThe preview has been live since: ${preview}\n\nBest`;
-ok("a link written in the brief may go out, with or without trailing punctuation", linksNotInBrief([preview, `${preview}.`], brief).length === 0);
-ok("a link the brief does not carry still blocks the send", JSON.stringify(linksNotInBrief([preview, "https://evil.example/x"], brief)) === JSON.stringify(["https://evil.example/x"]));
-ok("a different preview on the same host still blocks the send", linksNotInBrief(["https://p-999999999999--example-previews.netlify.app"], brief).length === 1);
-ok("no brief allows nothing extra", linksNotInBrief([preview], undefined).length === 1);
-ok("wiring: the outreach guard checks the draft against the brief the model was given", /linksNotInBrief\(badLinks\(verdict\.reply_html, verdict\.reply_text\), brief\)/.test(rw) && /details: brief \}/.test(rw));
+const comment = `Send it verbatim.\n\nThe preview has been live since: ${preview}\n\nBest`;
+ok("a link a teammate wrote in a comment may go out, with or without trailing punctuation", linksNotApproved([preview, `${preview}.`], comment).length === 0);
+ok("a link no comment carries still blocks the send", JSON.stringify(linksNotApproved([preview, "https://evil.example/x"], comment)) === JSON.stringify(["https://evil.example/x"]));
+ok("a different preview on the same host still blocks the send", linksNotApproved(["https://p-999999999999--example-previews.netlify.app"], comment).length === 1);
+ok("no comment approves nothing", linksNotApproved([preview], undefined).length === 1 && approvedLinks(undefined).length === 0);
+ok("wiring: a link in task.details is never approved, only one in the teammate guidance", /linksNotApproved\(badLinks\(verdict\.reply_html, verdict\.reply_text\), guidance\[task\.id\]\)/.test(rw) && /approvedLinks: approvedLinks\(guidance\[task\.id\]\)/.test(rw));
 
 console.log("outreach subject");
 const { outreachSubject } = await import("./support-scan.mjs");

@@ -48,12 +48,18 @@ export function supportTaskContactId(task) {
   return taskContactId(task);
 }
 
-/** Draft links that are not allowed and not written in the task's brief. A person
- *  who puts a link in the brief, like a prospect's preview site, has approved it. */
-export function linksNotInBrief(rogue, brief) {
-  const trim = u => u.replace(/[.,;:!?]+$/, "");
-  const inBrief = new Set((String(brief || "").match(/https?:\/\/[^\s"'<>)]+/gi) || []).map(trim));
-  return rogue.filter(u => !inBrief.has(trim(u)));
+const trimLink = u => u.replace(/[.,;:!?]+$/, "");
+
+/** Links a teammate wrote in a comment on the task, like a prospect's preview site. Only
+ *  these count as approved: task.details can quote what a customer or chat visitor wrote. */
+export function approvedLinks(teammateComments) {
+  return [...new Set((String(teammateComments || "").match(/https?:\/\/[^\s"'<>)]+/gi) || []).map(trimLink))];
+}
+
+/** Draft links that are not allowed and that no teammate approved in a comment. */
+export function linksNotApproved(rogue, teammateComments) {
+  const approved = new Set(approvedLinks(teammateComments));
+  return rogue.filter(u => !approved.has(trimLink(u)));
 }
 
 /** The task title is internal and never goes out as a subject. A brief that says to
