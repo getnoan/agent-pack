@@ -52,11 +52,10 @@ export const GROUNDING = {
     why: "research the market against what the company already knows about itself and its customers",
     slugs: [
       // company context — the same list market-research-refresh-worker.mjs grounds Company Context in
-      "product-list", "product-strategy", "product-roadmap", "product-faq", "monetization-model",
-      "mission-vision", "value-proposition", "brand-positioning",
+      "startup-elevator-pitch", "product-list", "product-features", "product-roadmap", "product-faq",
+      "monetization-model", "mission-vision", "brand-positioning", "year-goals", "event-launches",
       // ICP — what Customer Insights is anchored to
-      "ideal-customer", "sales-customer-profile", "sales-buyer-persona", "sales-buyer-segments",
-      "sales-icp-triggers", "audience-segments",
+      "ideal-customer", "audience-segments", "startup-problem", "customer-buying-process", "customer-objections",
     ],
   },
   "sales deck": {

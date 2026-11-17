@@ -48,6 +48,22 @@ export function supportTaskContactId(task) {
   return taskContactId(task);
 }
 
+/** Draft links that are not allowed and not written in the task's brief. A person
+ *  who puts a link in the brief, like a prospect's preview site, has approved it. */
+export function linksNotInBrief(rogue, brief) {
+  const trim = u => u.replace(/[.,;:!?]+$/, "");
+  const inBrief = new Set((String(brief || "").match(/https?:\/\/[^\s"'<>)]+/gi) || []).map(trim));
+  return rogue.filter(u => !inBrief.has(trim(u)));
+}
+
+/** The task title is internal and never goes out as a subject. A brief that says to
+ *  send "as a reply on "<subject>"" gets that thread's subject, ahead of the model's. */
+export function outreachSubject(verdict, brief, fallback) {
+  const thread = String(brief || "").match(/\breply on ["“]([^"”\n]+)["”]/i)?.[1];
+  const subject = (thread && `Re: ${thread.replace(/^\s*(re:\s*)+/i, "").trim()}`) || verdict?.subject || fallback;
+  return subject.replace(/[\r\n]+/g, " ").trim().slice(0, 120);
+}
+
 /** Tag ids to PUT when a re-assigned task is picked up again: everything it
  *  carries minus needs-human. `null` when it was not parked (no PUT needed). */
 export function unparkedTagIds(task) {
@@ -138,15 +154,14 @@ export function expiredCaseComment(kase, { agentName = "the agent", expiryDays =
 /* ---------------- an open case does not block the next task ----------------
  *
  * A "reply" outreach opens a case that stays open until the customer answers
- * or it expires (CASE_EXPIRY_DAYS). The scan used to skip every later support
- * task for that contact meanwhile, silently, so one answered FDA escalation
- * held up the next for up to two weeks. A customer's coding agent asks a series of
+ * or it expires (CASE_EXPIRY_DAYS). A later support task for that contact
+ * must not wait on it: a customer's coding agent asks a series of
  * independent questions, and every support task is a person's deliberate
- * hand-back, so the new task now goes out and JOINS the open case: its turn is
+ * hand-back, so the new task goes out and JOINS the open case: its turn is
  * appended, and a "reply" verdict adds its task to `taskIds` so the case closes
  * or expires every task it carries. A "resolve" verdict joins the turns only:
  * its task is done on send. Cases stay keyed by email, so any reply from the
- * customer continues the one conversation, as it already did. */
+ * customer continues the one conversation. */
 
 /** Every task a case carries: the one that opened it, then the joined ones. */
 export function caseTaskIds(kase) {

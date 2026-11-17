@@ -144,6 +144,7 @@ function buildUserPrompt({ inbound, body, contact, caseData, openerNote, outreac
       `## Proactive outreach (a teammate queued a support task — YOU open the conversation)`,
       `Task: ${outreach.title}`,
       `Brief: ${outreach.details || "(none)"}`,
+      /https?:\/\//i.test(outreach.details || "") ? `A link written in the brief above may go in your message exactly as written, on top of the links the hard rules allow. Never add any other link.` : ``,
       ``,
       `## Customer (from NOAN)`,
       `Name: ${contact.name || "(unknown)"} · Email: ${contact.email}`,

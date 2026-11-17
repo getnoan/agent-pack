@@ -69,7 +69,7 @@ export async function loadCapabilityTexts() {
 /**
  * GET /facts for a model's get_facts tool. A read of the core block returns the whole
  * registry once groups exist, so a model that asks for "the capabilities block" never
- * sees part of the menu (the 2026-08-18 public denial). Every other slug, and the core
+ * sees part of the menu. Every other slug, and the core
  * block while there are no groups, is the plain read.
  */
 export async function factsForModel(slug) {

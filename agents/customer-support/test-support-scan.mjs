@@ -174,5 +174,30 @@ ok("wiring: closing a case closes every task it carries", /async function closeC
 ok("wiring: a dry run sends no outreach and parks nothing", /if \(DRY_RUN\) \{ log\(`  dry-run: would park/.test(rw) && /dry-run: would send the \$\{verdict\.action\} outreach/.test(rw));
 ok("wiring: an expired case parks every task it carries", /async function settleExpiredCaseTasks[\s\S]{0,800}caseTaskIds\(kase\)/.test(rw));
 
+const { linksNotInBrief } = await import("./support-scan.mjs");
+const preview = "https://p-1664874c594b--example-previews.netlify.app";
+const brief = `Send it verbatim.\n\nThe preview has been live since: ${preview}\n\nBest`;
+ok("a link written in the brief may go out, with or without trailing punctuation", linksNotInBrief([preview, `${preview}.`], brief).length === 0);
+ok("a link the brief does not carry still blocks the send", JSON.stringify(linksNotInBrief([preview, "https://evil.example/x"], brief)) === JSON.stringify(["https://evil.example/x"]));
+ok("a different preview on the same host still blocks the send", linksNotInBrief(["https://p-999999999999--example-previews.netlify.app"], brief).length === 1);
+ok("no brief allows nothing extra", linksNotInBrief([preview], undefined).length === 1);
+ok("wiring: the outreach guard checks the draft against the brief the model was given", /linksNotInBrief\(badLinks\(verdict\.reply_html, verdict\.reply_text\), brief\)/.test(rw) && /details: brief \}/.test(rw));
+
+console.log("outreach subject");
+const { outreachSubject } = await import("./support-scan.mjs");
+const replyBrief = `Send it verbatim, as a reply on "Your preview site is live: Example Co". Do not reword it.`;
+const subjectCases = [
+  ["a brief naming a thread wins over the model's subject", { subject: "Quick check-in" }, replyBrief, "Re: Your preview site is live: Example Co"],
+  ["curly quotes and an existing Re: give one Re:", {}, "Send as a reply on “Re: re: Your preview”.", "Re: Your preview"],
+  ["with no thread in the brief the model's subject goes out", { subject: "Your preview" }, "Ask what she thinks.", "Your preview"],
+  ["with neither, the fallback goes out", {}, "Ask what she thinks.", "Checking in"],
+];
+for (const [name, verdict, b, want] of subjectCases) ok(name, outreachSubject(verdict, b, "Checking in") === want, outreachSubject(verdict, b, "Checking in"));
+ok("wiring: the outreach subject never falls back to the task title", /const subject = outreachSubject\(verdict, brief, /.test(rw) && !/verdict\.subject \|\| task\.title/.test(rw));
+ok("wiring: a sent outreach leaves a comment on its task", /postTaskComment\(task\.id, `Sent the \$\{resolved/.test(rw));
+
+ok("wiring: a task parked twice in a day with a new reason gets a new escalation key", /id: `task:\$\{task\.id\}:\$\{new Date\(\)\.toISOString\(\)\.slice\(0, 10\)\}:\$\{createHash\("sha256"\)\.update\(reason\)/.test(rw));
+ok("wiring: an escalation email Resend already took does not crash the run", /idempotencyKey: `\$\{AGENT_NAME\}:escalate:\$\{inbound\.id\}`,\s*\}\)\.catch\(e => \{\s*if \(e\.status !== 409/.test(rw));
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -28,6 +28,17 @@ import { LABEL_DECISION, handleFooter } from "../shared/report-handles.mjs";
 
 const MARKET_RESEARCH_STACK_TITLE = "Market Research";
 
+/* ---------------- what a fact write may carry ---------------- */
+
+// POST /facts rejects content over 20,000 characters (the API
+// enforced 75,000 for a while, which is how Category Dynamics grew to ~19.7k). A rejected
+// write is retried once and then reported, so without a guard the block just goes stale.
+// The drafter is asked for less than the cap so a draft rarely needs condensing at all.
+export const FACT_CONTENT_MAX = 20000;
+export const FACT_CONTENT_TARGET = 18000;
+// factSources / factWriteBody live in fact-sources.mjs, shared with brand extract.
+export { factSources, factWriteBody } from "./fact-sources.mjs";
+
 const MODEL = process.env.MARKET_RESEARCH_MODEL || "claude-opus-5";
 
 const MAX_QUERIES_PER_BLOCK = 3;
@@ -190,6 +201,7 @@ function buildDraftSystemPrompt(brain, playbook) {
     `- Don't delete content just because this run didn't reconfirm it — only supersede content that's now demonstrably wrong or stale.`,
     `- For Category Dynamics, a named competitor that no longer competes for the buyer described in the Category Dynamics grounding facts IS stale, even when its own launches and pricing still check out: remove it or move it to the group it now belongs in (adjacent, complement, substitute), and say which and why in changeSummary. When the grounding shows the company's product or buyer has moved, restructuring the competitor groups is a refinement, not a disconnected rewrite.`,
     `- For Company Context specifically: if web research conflicts with an internal NOAN fact provided below, the INTERNAL fact wins in refinedContent — note the external conflict in changeSummary instead, it's still worth knowing even though it doesn't belong in the ground-truth content.`,
+    `- Keep each refinedContent under ${FACT_CONTENT_TARGET.toLocaleString("en-US")} characters. The fact layer rejects anything over ${FACT_CONTENT_MAX.toLocaleString("en-US")}, so when a block nears that, tighten older or lower-value material rather than growing it.`,
     `- No raw URLs or citation markers in refinedContent — citations belong only in sourcesUsedUrls, which the system uses to build the report's Sources section.`,
     `- Every keyTakeaway pairs a finding with its implication for NOAN — never a bare fact with no "so what."`,
   ].join("");
@@ -251,9 +263,57 @@ export async function draftBlocks({ blocks, researchByBlock, companyContextGroun
   return callClaudeJSON({ system, user, schema: DRAFT_SCHEMA, model: MODEL, maxTokens: 64000 });
 }
 
+/* ---------------- condense an over-long draft ---------------- */
+
+const CONDENSE_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  properties: { content: { type: "string", description: "The condensed block content, complete." } },
+  required: ["content"],
+};
+
+/** What to ask of a condense pass. A model cannot count characters, so the budget is also
+ *  given in words, scaled from this draft's own characters per word, with the cut it implies. */
+export function condenseBudget(content, target = FACT_CONTENT_TARGET) {
+  const chars = content.length;
+  const words = Math.max(1, (content.match(/\S+/g) || []).length);
+  const targetWords = Math.floor(words * target / chars);
+  return { chars, words, target, targetWords, cutPct: Math.max(0, Math.round((1 - target / chars) * 100)) };
+}
+
+/** Bring a drafted block under the cap: up to three passes, each from the shortest version so
+ *  far and told how the last one missed. Returns the shortest content produced; the caller
+ *  checks it against the cap, so this never decides on its own that a block is written.
+ *  The Agent Config is not passed in: its "don't delete what this run didn't reconfirm"
+ *  rule is right for drafting and is exactly what stopped the first version of this cutting. */
+export async function condenseBlock({ title, content, attempts = 3, log = () => {}, call = callClaudeJSON }) {
+  let best = content;
+  let lastMiss = "";
+  for (let i = 1; i <= attempts && best.length > FACT_CONTENT_MAX; i++) {
+    const b = condenseBudget(best);
+    const system = [
+      `You cut one Market Research fact so the fact layer will accept it. It is ${b.words.toLocaleString("en-US")} words (${b.chars.toLocaleString("en-US")} characters) and must come back at no more than ${b.targetWords.toLocaleString("en-US")} words (${b.target.toLocaleString("en-US")} characters): remove about ${b.cutPct}% of it. A result that is not substantially shorter is a failure.`,
+      `Keep the subsection headings and the claims that matter most to the company's strategy. Cut, in this order: repetition across subsections, older detail that newer detail supersedes, secondary examples and named players beyond the most important few per group, and qualifying asides. Shorten long bullets to one sentence. Add nothing new, and no URLs or citation markers.`,
+      lastMiss,
+    ].filter(Boolean).join("\n\n");
+    const user = `## ${title}\n\n${best}`;
+    let got = "";
+    try {
+      const out = await call({ system, user, schema: CONDENSE_SCHEMA, model: MODEL, maxTokens: 16000 });
+      got = String(out?.content || "");
+    } catch (e) {
+      log(`  warn: condense pass ${i} failed: ${e.message}`);   // keep what earlier passes achieved
+    }
+    log(`  condense pass ${i}: ${best.length} -> ${got.length || "(empty)"} chars`);
+    if (got && got.length < best.length) best = got;
+    lastMiss = `Your previous attempt came back at ${got.length.toLocaleString("en-US")} characters, which is still too long. Cut harder this time.`;
+  }
+  return best;
+}
+
 /* ---------------- deterministic report rendering ---------------- */
 
-export function renderReport({ dateLabel, result, blockTitleBySlug, blockMismatchNote, failedPosts, sourcesByBlock, emptyRecipients }) {
+export function renderReport({ dateLabel, result, blockTitleBySlug, blockMismatchNote, failedPosts, oversizeBlocks = [], sourcesByBlock, emptyRecipients }) {
   const parts = [`# Market Research Briefing — ${dateLabel}`, "", "## Key Takeaways"];
 
   // Takeaways are findings, not actions: numbered T1… so a reply can point at one, but never
@@ -261,6 +321,7 @@ export function renderReport({ dateLabel, result, blockTitleBySlug, blockMismatc
   // "specific" left to apply. The decisions live in Discussion Points.
   const takeaways = [...result.keyTakeaways.map((t, i) => `- T${i + 1} ${t.finding} — ${t.implication}`)];
   if (blockMismatchNote) takeaways.push(`- ${blockMismatchNote}`);
+  if (oversizeBlocks.length) takeaways.push(`- Not written, too long for the fact layer even after condensing: ${oversizeBlocks.join(", ")}. Those blocks keep last month's fact; shorten the live fact by hand or retune the Agent Config so the next draft fits under ${FACT_CONTENT_MAX.toLocaleString("en-US")} characters.`);
   if (failedPosts.length) takeaways.push(`- Fact write failed for: ${failedPosts.join(", ")} (retried once, still failed) — those blocks were NOT updated this run.`);
   parts.push(takeaways.length ? takeaways.join("\n") : "No takeaways to report this run.");
 

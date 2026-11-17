@@ -23,6 +23,20 @@ import { fieldsDraftRule } from "./space-fields.mjs";
 
 const MODEL = process.env.FACT_ALIGNMENT_MODEL || "claude-opus-5";
 
+// What applying a recommendation rests on that this call cannot see. Anything other than "none"
+// keeps the entry out of "go ahead": the model read a snapshot of text, so it can spot that two
+// facts disagree but cannot tell which one matches the code or the outside world.
+const APPLY_RISK_REASON = {
+  product_behaviour: "it says how the product or API behaves, which this audit cannot check against the code",
+  external_status: "it depends on the current status or date of something outside the fact base",
+  loosens_restriction: "it removes or weakens a restriction on what may be said or done",
+};
+const APPLY_RISK_PROP = {
+  type: "string",
+  enum: ["none", ...Object.keys(APPLY_RISK_REASON)],
+  description: "What applying this rests on that you cannot verify from the text. product_behaviour: it states how the product, API or code works. external_status: it depends on the current state or date of something in the world (an audit, a contract, a launch). loosens_restriction: it removes or weakens a rule about what may be said or done. none: only when the facts given to you fully settle it.",
+};
+
 const SCHEMA = {
   type: "object",
   additionalProperties: false,
@@ -39,8 +53,9 @@ const SCHEMA = {
           stackTitle: { type: "string" },
           whyItMatters: { type: "string", description: "Why this gap is worth filling, concretely." },
           recommendedContent: { type: ["string", "null"], description: "Full ready-to-post fact content for this block, GROUNDED in facts or context actually provided to you in this prompt. Null if you don't have enough real information to draft genuine content (e.g. a legal policy's actual text, financial specifics, HR criteria, or partnership terms not shown to you anywhere in this input) — never invent plausible-sounding boilerplate to fill the field. Flagging the gap with null content and a clear whyItMatters is more useful than confident-sounding fabrication a human has to first realize is fake." },
+          applyRisk: APPLY_RISK_PROP,
         },
-        required: ["blockSlug", "blockTitle", "stackTitle", "whyItMatters", "recommendedContent"],
+        required: ["blockSlug", "blockTitle", "stackTitle", "whyItMatters", "recommendedContent", "applyRisk"],
       },
     },
     contradictions: {
@@ -56,11 +71,14 @@ const SCHEMA = {
           blockBSlug: { type: "string" },
           blockBTitle: { type: "string" },
           blockBQuote: { type: "string", description: "The specific conflicting excerpt from block B." },
-          targetBlockSlug: { type: "string", description: "Which block's content should be rewritten to resolve this." },
-          oldExcerpt: { type: "string", description: "The exact span of targetBlockSlug's CURRENT fact to be replaced, copied VERBATIM — character for character, including punctuation, capitalisation, markdown and line breaks — from the block content shown to you. It must appear EXACTLY ONCE in that fact: if the span you want to change is short or repeated (a bare table cell, a common phrase), widen it with surrounding context until it is unique. Never paraphrase, never re-type from memory, never abbreviate with an ellipsis. A human has to locate this span in the live fact to make the edit, so it must match verbatim and occur exactly once — an approximate or ambiguous quote makes the recommendation unusable." },
-          newExcerpt: { type: "string", description: "What oldExcerpt should become. Just the replacement span, in the same style and formatting as the surrounding document — NOT the whole document, and NOT an instruction like \"replace the trial line with...\". Everything outside oldExcerpt is preserved automatically, so never restate unrelated content here." },
+          resolution: { type: "string", enum: ["edit", "needs_human"], description: "edit: the facts given to you settle which side is right. needs_human: settling it needs something you cannot see, so propose no edit and leave targetBlockSlug, oldExcerpt and newExcerpt null." },
+          decisionNeeded: { type: ["string", "null"], description: "For needs_human, the one question a person has to answer. Null for edit." },
+          applyRisk: APPLY_RISK_PROP,
+          targetBlockSlug: { type: ["string", "null"], description: "Which block's content should be rewritten to resolve this. Null for needs_human." },
+          oldExcerpt: { type: ["string", "null"], description: "The exact span of targetBlockSlug's CURRENT fact to be replaced, copied VERBATIM — character for character, including punctuation, capitalisation, markdown and line breaks — from the block content shown to you. It must appear EXACTLY ONCE in that fact: if the span you want to change is short or repeated (a bare table cell, a common phrase), widen it with surrounding context until it is unique. Never paraphrase, never re-type from memory, never abbreviate with an ellipsis. A human has to locate this span in the live fact to make the edit, so it must match verbatim and occur exactly once — an approximate or ambiguous quote makes the recommendation unusable." },
+          newExcerpt: { type: ["string", "null"], description: "What oldExcerpt should become. Just the replacement span, in the same style and formatting as the surrounding document — NOT the whole document, and NOT an instruction like \"replace the trial line with...\". Everything outside oldExcerpt is preserved automatically, so never restate unrelated content here." },
         },
-        required: ["blockASlug", "blockATitle", "blockAQuote", "blockBSlug", "blockBTitle", "blockBQuote", "targetBlockSlug", "oldExcerpt", "newExcerpt"],
+        required: ["blockASlug", "blockATitle", "blockAQuote", "blockBSlug", "blockBTitle", "blockBQuote", "resolution", "decisionNeeded", "applyRisk", "targetBlockSlug", "oldExcerpt", "newExcerpt"],
       },
     },
     overlaps: {
@@ -75,11 +93,12 @@ const SCHEMA = {
           blockBSlug: { type: "string" },
           blockBTitle: { type: "string" },
           whatsDuplicated: { type: "string" },
+          applyRisk: APPLY_RISK_PROP,
           targetBlockSlug: { type: "string", description: "Which block's content should be rewritten to remove the restatement." },
           oldExcerpt: { type: "string", description: "The exact span of targetBlockSlug's CURRENT fact to be replaced, copied VERBATIM — character for character, including punctuation, capitalisation, markdown and line breaks — from the block content shown to you. It must appear EXACTLY ONCE in that fact: widen it with surrounding context until it is unique. Never paraphrase, never re-type from memory, never abbreviate with an ellipsis." },
           newExcerpt: { type: "string", description: "What oldExcerpt should become — typically the restatement replaced by a short reference to the block that owns the value. Just the replacement span, NOT the whole document and NOT an edit instruction. Everything outside oldExcerpt is preserved automatically." },
         },
-        required: ["blockASlug", "blockATitle", "blockBSlug", "blockBTitle", "whatsDuplicated", "targetBlockSlug", "oldExcerpt", "newExcerpt"],
+        required: ["blockASlug", "blockATitle", "blockBSlug", "blockBTitle", "whatsDuplicated", "applyRisk", "targetBlockSlug", "oldExcerpt", "newExcerpt"],
       },
     },
     // Every candidate is still adjudicated explicitly — each ref lands in exactly one of
@@ -96,13 +115,16 @@ const SCHEMA = {
           ref: { type: "string", description: "The item's short ref from the input (T1, T2, ... for capture-queue tasks; N1, N2, ... for notes-scan items)." },
           source: { type: "string", enum: ["task", "notes-scan"] },
           sourceLabel: { type: "string", description: "Task title (for source=task) or the note's title + createdAt date (for source=notes-scan)." },
-          recommendedContent: { type: "string", description: "Full ready-to-post fact content." },
+          recommendedContent: { type: ["string", "null"], description: "Full ready-to-post fact content, only for a new block or an empty block. Null when targetBlockSlug already has a fact: use oldExcerpt and newExcerpt instead." },
+          oldExcerpt: { type: ["string", "null"], description: "When targetBlockSlug already has a fact: the exact span to replace, copied verbatim and unique within it. Otherwise null." },
+          newExcerpt: { type: ["string", "null"], description: "What oldExcerpt becomes. Just the replacement span. Otherwise null." },
+          applyRisk: APPLY_RISK_PROP,
           targetBlockSlug: { type: ["string", "null"], description: "An existing block slug this maps to, or null if it needs a new block." },
           newBlockTitle: { type: ["string", "null"], description: "Suggested new block title, only if targetBlockSlug is null." },
           newBlockDescription: { type: ["string", "null"], description: "Suggested new block description, only if targetBlockSlug is null." },
           newStackTitle: { type: ["string", "null"], description: "Which existing stack the new block belongs in (by title), or a suggested new custom stack title if genuinely warranted (rare). Only if targetBlockSlug is null." },
         },
-        required: ["ref", "source", "sourceLabel", "recommendedContent", "targetBlockSlug", "newBlockTitle", "newBlockDescription", "newStackTitle"],
+        required: ["ref", "source", "sourceLabel", "recommendedContent", "oldExcerpt", "newExcerpt", "applyRisk", "targetBlockSlug", "newBlockTitle", "newBlockDescription", "newStackTitle"],
       },
     },
     rejectedCandidates: {
@@ -148,21 +170,34 @@ function buildSystemPrompt(brain) {
     `- Some gaps are marked as RENDERED BY AN APP (an App Kit page that reads the block as a sheet of \`Label: value\` lines, such as a Space's Brief). For those, the shape rule on the gap line is part of being ready-to-post: write recommendedContent as \`- **Label**: value\` lines only, in the order given, leaving out a label with nothing on record. Headed markdown or prose there is not a weaker draft, it is an invisible one.`,
     `- Never fabricate content to fill a gap. Only draft a gap's recommendedContent when you can genuinely ground it in facts or context actually given to you in this prompt. If a gap concerns something you have no real information about — a legal policy's actual text, financial specifics, HR criteria, partnership terms, anything not shown to you here — set recommendedContent to null and explain the gap in whyItMatters instead. Confident-sounding invented content is worse than an honest null: a human has to first realize it's fake before they can fix it.`,
     `- Most notes-scan items and most capture-queue tasks are NOT genuine fact candidates — operational escalations, one-off contact context, and engineering/repo conventions are all rejections. Judge every item and put its ref in exactly one place: a full entry in candidates for the genuine few, or a one-line {ref, reason} in rejectedCandidates for the rest. Never stretch a thin note into a placeholder draft; an empty Candidate Facts section is a valid, expected, good outcome in a healthy week.`,
+    `- WHAT YOU CAN AND CANNOT KNOW. You see only the current text of each fact, its approval date and its block's purpose. You cannot see the code, the product, or anything in the world. So when settling a contradiction needs one of those, set resolution to needs_human, propose no edit and state the one question in decisionNeeded. Never decide it by counting how many blocks say the same thing.`,
+    `- Each block's approval date is evidence, not a verdict. Several older facts agreeing against one newer fact often means the newer one records a change the older ones missed, so never recommend moving a newer fact back to what older facts say unless the text proves the newer one is wrong.`,
+    `- A CONTRADICTION is two facts that cannot both be true. A rule about what may be said to one audience, beside a statement made for a different audience, is deliberate scoping and is not a contradiction: do not report it. Never fix one by writing the restricted information into the block that restricts it.`,
+    `- Do not recommend replacing a usable value with a pointer to another block when the block is where a person or agent would come for that value, such as a link or a contact detail. An overlap is worth reporting when the value is likely to change.`,
+    `- A candidate aimed at a block that already has a fact uses an EXCERPT PAIR under the same rules as a contradiction, so every other line of that fact survives. Keep every existing restriction unless the source explicitly lifts it, and set applyRisk to loosens_restriction if it does.`,
+    `- A note marked as a draft, plan or proposal records an intention, not what is happening. Do not write it up as current practice.`,
+    `- Draft a gap to its stated block purpose. If your input can only support part of that purpose, say which part is missing in whyItMatters.`,
+    `- Do not raise a finding listed under "Dismissed findings" again unless a block it involves has an approval date later than the dismissal.`,
     `- The summary is the only place you write freeform prose. Keep it to 2-5 short bullets, at most two sentences each — this is what a busy reader sees first, so lead with what's actually worth their attention, not an exhaustive restatement of every list below it.`,
   ].join("");
 }
 
-function buildUserPrompt({ windowLabel, isFirstRun, inScopeBlocks, gapBlocks, taskCandidates, notesCandidates, anomalies }) {
+// A block description can run long and only needs to convey what the block is for.
+const purposeOf = b => (b.description || "").trim().slice(0, 400);
+
+function buildUserPrompt({ windowLabel, isFirstRun, inScopeBlocks, gapBlocks, taskCandidates, notesCandidates, anomalies, dismissedFindings = [] }) {
   const filledBlocks = inScopeBlocks.filter(b => b.content);
   const blockLines = filledBlocks.map(b =>
-    `### ${b.stackTitle} / ${b.title} (blockSlug: ${b.slug})\n${b.content}`
+    `### ${b.stackTitle} / ${b.title} (blockSlug: ${b.slug}${b.approvedAt ? `; approved ${b.approvedAt.slice(0, 10)}` : ""})\n${purposeOf(b) ? `Block purpose: ${purposeOf(b)}\n` : ""}${b.content}`
   ).join("\n\n---\n\n");
 
-  const gapLines = gapBlocks.map(b => `- ${b.stackTitle} / ${b.title} (blockSlug: ${b.slug}) — no fact recorded${b.fields ? `; RENDERED BY AN APP: ${fieldsDraftRule(b.fields)}` : ""}`).join("\n") || "(none)";
+  const gapLines = gapBlocks.map(b => `- ${b.stackTitle} / ${b.title} (blockSlug: ${b.slug}) — no fact recorded${purposeOf(b) ? `; block purpose: ${purposeOf(b)}` : ""}${b.fields ? `; RENDERED BY AN APP: ${fieldsDraftRule(b.fields)}` : ""}`).join("\n") || "(none)";
 
   const taskLines = taskCandidates.map((t, i) => `- [T${i + 1} · task ${t.id}] "${t.title}"\n  ${(t.details || "").slice(0, 2000)}`).join("\n\n") || "(none)";
 
   const noteLines = notesCandidates.map((n, i) => `- [N${i + 1} · note ${n.id}, ${n.createdAt}] "${n.title || "(untitled)"}"\n  ${(n.content || "").slice(0, 2000)}`).join("\n\n") || "(none)";
+
+  const dismissedLines = dismissedFindings.map(d => `- ${d.label || d.id} (target ${d.blockSlug || "none"}), dismissed ${String(d.dismissedAt || "").slice(0, 10)}${d.reason ? `: ${d.reason}` : ""}`).join("\n") || "(none)";
 
   const anomalyLines = anomalies.map(a => `- blockSlug ${a.blockSlug} (${a.blockTitle || "unknown title"}) has a fact but is outside the in-scope stack set${a.note ? ` — ${a.note}` : ""}`).join("\n") || "(none)";
 
@@ -171,6 +206,9 @@ function buildUserPrompt({ windowLabel, isFirstRun, inScopeBlocks, gapBlocks, ta
     ``,
     `## In-scope blocks with a current fact (${filledBlocks.length} total) — read for contradictions and overlaps`,
     filledBlocks.length ? blockLines : "(none)",
+    ``,
+    `## Dismissed findings: a person has already ruled on these (${dismissedFindings.length} total)`,
+    dismissedLines,
     ``,
     `## In-scope blocks with NO current fact — gaps (${gapBlocks.length} total)`,
     gapLines,
@@ -215,9 +253,9 @@ const TRUNCATED_RX = /truncated at max_tokens/;
 
 /** Returns the model's structured judgment. Throws on hard failure.
  *  `call` is injectable for tests; production always uses callClaudeJSON. */
-export async function runFactAlignmentAgent({ windowLabel, isFirstRun, inScopeBlocks, gapBlocks, taskCandidates, notesCandidates, anomalies, brain }, { call = callClaudeJSON, log = console.log } = {}) {
+export async function runFactAlignmentAgent({ windowLabel, isFirstRun, inScopeBlocks, gapBlocks, taskCandidates, notesCandidates, anomalies, dismissedFindings = [], brain }, { call = callClaudeJSON, log = console.log } = {}) {
   const system = buildSystemPrompt(brain);
-  const user = buildUserPrompt({ windowLabel, isFirstRun, inScopeBlocks, gapBlocks, taskCandidates, notesCandidates, anomalies });
+  const user = buildUserPrompt({ windowLabel, isFirstRun, inScopeBlocks, gapBlocks, taskCandidates, notesCandidates, anomalies, dismissedFindings });
   try {
     return await call({ system, user, schema: SCHEMA, model: MODEL, maxTokens: MAX_TOKENS });
   } catch (e) {
@@ -284,6 +322,21 @@ export function manifestWindowKey(windowStartIso) {
 
 export function manifestEntryKey(kind, index) {
   return `${kind}:${index}`;
+}
+
+const RESTRICTION_RX = /\b(?:never|do not|don['’]t|must not|may not|cannot|can['’]t|until|not yet)\b/gi;
+const restrictionCount = text => (String(text ?? "").match(RESTRICTION_RX) || []).length;
+
+/**
+ * Why a drafted edit must not ride on "go ahead", or null. The model's applyRisk is one input;
+ * the count of restriction words is the other, in code, because the failure it catches is the
+ * model not noticing what it dropped. The bias is toward the human: an omitted or unknown
+ * applyRisk blocks, the same rule report-handles applies to labelForKind.
+ */
+export function applyBlockReason(item) {
+  if (restrictionCount(item.newExcerpt) < restrictionCount(item.oldExcerpt)) return "the edit has fewer restrictions (never, do not, until) than the text it replaces";
+  if (item.applyRisk === "none") return null;
+  return APPLY_RISK_REASON[item.applyRisk] || "the audit did not classify what this edit rests on";
 }
 
 /**
@@ -353,23 +406,28 @@ export function buildManifest({ windowKey, windowLabel, result, baseFactIdOf, cr
     content: g.recommendedContent,
     label: `${g.blockTitle} (${g.stackTitle})`,
     blockedReason: !g.recommendedContent ? "no drafted content — needs a human to fill in directly"
-      : g.formatProblem ? `drafted ${g.formatProblem}` : null,
+      : g.formatProblem ? `drafted ${g.formatProblem}` : applyBlockReason(g),
   }));
 
-  (result.contradictions || []).forEach((c, i) => add("contradiction", i, {
-    blockSlug: c.targetBlockSlug,
-    oldExcerpt: c.oldExcerpt,
-    newExcerpt: c.newExcerpt,
-    label: `${c.blockATitle} vs ${c.blockBTitle}`,
-    blockedReason: (c.oldExcerpt && c.newExcerpt) ? null : "incomplete excerpt pair — needs a human to make this edit directly",
-  }));
+  (result.contradictions || []).forEach((c, i) => {
+    // Anything but an explicit "edit" is a person's call, and a pair sent alongside one is ignored.
+    const isEdit = c.resolution === "edit";
+    add("contradiction", i, {
+      blockSlug: isEdit ? c.targetBlockSlug : null,
+      oldExcerpt: isEdit ? c.oldExcerpt : null,
+      newExcerpt: isEdit ? c.newExcerpt : null,
+      label: `${c.blockATitle} vs ${c.blockBTitle}`,
+      blockedReason: !isEdit ? `needs a person: ${c.decisionNeeded || "which side is right"}`
+        : (c.oldExcerpt && c.newExcerpt) ? applyBlockReason(c) : "incomplete excerpt pair — needs a human to make this edit directly",
+    });
+  });
 
   (result.overlaps || []).forEach((o, i) => add("overlap", i, {
     blockSlug: o.targetBlockSlug,
     oldExcerpt: o.oldExcerpt,
     newExcerpt: o.newExcerpt,
     label: `${o.blockATitle} and ${o.blockBTitle}`,
-    blockedReason: (o.oldExcerpt && o.newExcerpt) ? null : "incomplete excerpt pair — needs a human to make this edit directly",
+    blockedReason: (o.oldExcerpt && o.newExcerpt) ? applyBlockReason(o) : "incomplete excerpt pair — needs a human to make this edit directly",
   }));
 
   // The report shows only genuine candidates, so the manifest indexes the same filtered
@@ -378,8 +436,13 @@ export function buildManifest({ windowKey, windowLabel, result, baseFactIdOf, cr
   genuineCandidates(result).forEach((c, i) => add("candidate", i, {
     blockSlug: c.targetBlockSlug,
     content: c.recommendedContent,
+    oldExcerpt: c.oldExcerpt,
+    newExcerpt: c.newExcerpt,
     label: c.sourceLabel,
-    blockedReason: c.targetBlockSlug ? null : `needs a new block "${c.newBlockTitle || "untitled"}"`,
+    blockedReason: !c.targetBlockSlug ? `needs a new block "${c.newBlockTitle || "untitled"}"`
+      // Retyping a whole fact is how a clause silently disappears, so it never rides on "go ahead".
+      : (baseFactIdOf(c.targetBlockSlug) && !(c.oldExcerpt && c.newExcerpt)) ? "rewrites the whole of a fact that already exists — compare it line by line before posting"
+      : applyBlockReason(c),
   }));
 
   // Website findings come from the site scan, which never drafts a rewrite — it reports what
@@ -500,7 +563,7 @@ function renderExcerptPair(targetSlug, oldExcerpt, newExcerpt, bodyBudget = null
   ].join("\n");
 }
 
-export function renderReport({ windowLabel, result, manifest, site, missingFactReviewTag, malformedCaptures = [], factSizes = [], deliberatelyEmptyCount = 0, emptyRecipients, bodyBudget = null }) {
+export function renderReport({ windowLabel, result, manifest, site, missingFactReviewTag, malformedCaptures = [], unresolvedDismissals = [], factSizes = [], deliberatelyEmptyCount = 0, emptyRecipients, bodyBudget = null }) {
   const candidates = genuineCandidates(result);
 
   // Ids are assigned by position, so a manifest that doesn't line up with what's about to
@@ -517,6 +580,12 @@ export function renderReport({ windowLabel, result, manifest, site, missingFactR
     return `\`${entry.id}\` ${entryLabel(entry)} `;
   };
 
+  // Says why a drafted edit is not ready, next to the edit, so the label is not a bare verdict.
+  const decisionLine = (kind, i) => {
+    const entry = entryIndex.get(manifestEntryKey(kind, i));
+    return entry && !entry.applicable && entry.mode && entry.blockedReason ? `\n\n  Why this needs a decision: ${entry.blockedReason}.` : "";
+  };
+
   // maxItems isn't a supported JSON-schema keyword for structured output, so the 5-bullet
   // cap is prompt-only on the model's side — enforce it here too rather than trust compliance.
   // Array.isArray guard: a malformed response should degrade to an empty summary, not a
@@ -527,6 +596,7 @@ export function renderReport({ windowLabel, result, manifest, site, missingFactR
   if (emptyRecipients) summaryLines.push(`No contacts carry the report recipient tag — this report was not emailed.`);
   if (deliberatelyEmptyCount) summaryLines.push(`${deliberatelyEmptyCount} empty block(s) marked deliberately empty were left out of Gaps.`);
   if (factSizesSummary(factSizes)) summaryLines.push(factSizesSummary(factSizes));
+  if (unresolvedDismissals.length) summaryLines.push(`${unresolvedDismissals.length} dismissal task(s) name an id no retained report has, so they were left open: ${unresolvedDismissals.map(d => d.id).join(", ")}.`);
   if (malformedCaptures.length) summaryLines.push(`${malformedCaptures.length} backlog task(s) look like a fact capture but do not carry the \`[Fact Candidate]\` title prefix, so they were not picked up — see Malformed Captures.`);
 
   const parts = [`# Weekly Fact Alignment Report — ${windowLabel}`];
@@ -540,18 +610,18 @@ export function renderReport({ windowLabel, result, manifest, site, missingFactR
   parts.push("", "## Gaps");
   parts.push(result.gaps.length
     ? result.gaps.map((g, i) => `- ${tag("gap", i)}**${g.blockTitle}** (\`${g.blockSlug}\`, in ${g.stackTitle}) — ${g.whyItMatters}\n\n  ${g.recommendedContent
-        ? `${g.formatProblem ? `Format check: drafted ${g.formatProblem}\n\n  ` : ""}Recommended content:\n  > ${clipBody(g.recommendedContent, bodyBudget).replace(/\n/g, "\n  > ")}`
+        ? `${g.formatProblem ? `Format check: drafted ${g.formatProblem}\n\n  ` : ""}Recommended content:\n  > ${clipBody(g.recommendedContent, bodyBudget).replace(/\n/g, "\n  > ")}${g.formatProblem ? "" : decisionLine("gap", i)}`
         : `Recommended content: insufficient context this run to draft real content — needs a human to fill this in directly.`}`).join("\n\n")
     : "No gaps found this run.");
 
   parts.push("", "## Contradictions");
   parts.push(result.contradictions.length
-    ? result.contradictions.map((c, i) => `- ${tag("contradiction", i)}**${c.blockATitle}** (\`${c.blockASlug}\`): "${c.blockAQuote}"\n  vs. **${c.blockBTitle}** (\`${c.blockBSlug}\`): "${c.blockBQuote}"\n\n${renderExcerptPair(c.targetBlockSlug, c.oldExcerpt, c.newExcerpt, bodyBudget)}`).join("\n\n")
+    ? result.contradictions.map((c, i) => `- ${tag("contradiction", i)}**${c.blockATitle}** (\`${c.blockASlug}\`): "${c.blockAQuote}"\n  vs. **${c.blockBTitle}** (\`${c.blockBSlug}\`): "${c.blockBQuote}"\n\n${c.resolution === "edit" ? renderExcerptPair(c.targetBlockSlug, c.oldExcerpt, c.newExcerpt, bodyBudget) : `  No edit recommended. Question for a person: ${c.decisionNeeded || "which side is right?"}`}${decisionLine("contradiction", i)}`).join("\n\n")
     : "No contradictions found this run.");
 
   parts.push("", "## Overlaps");
   parts.push(result.overlaps.length
-    ? result.overlaps.map((o, i) => `- ${tag("overlap", i)}**${o.blockATitle}** (\`${o.blockASlug}\`) and **${o.blockBTitle}** (\`${o.blockBSlug}\`) — ${o.whatsDuplicated}\n\n${renderExcerptPair(o.targetBlockSlug, o.oldExcerpt, o.newExcerpt, bodyBudget)}`).join("\n\n")
+    ? result.overlaps.map((o, i) => `- ${tag("overlap", i)}**${o.blockATitle}** (\`${o.blockASlug}\`) and **${o.blockBTitle}** (\`${o.blockBSlug}\`) — ${o.whatsDuplicated}\n\n${renderExcerptPair(o.targetBlockSlug, o.oldExcerpt, o.newExcerpt, bodyBudget)}${decisionLine("overlap", i)}`).join("\n\n")
     : "No overlaps found this run.");
 
   parts.push(...renderWebsiteSection({ site, manifest, bodyBudget }));
@@ -564,7 +634,10 @@ export function renderReport({ windowLabel, result, manifest, site, missingFactR
     ? candidates.map((c, i) => {
         const sourceLabel = c.source === "task" ? `[Fact Candidate] task: ${c.sourceLabel}` : `notes scan: ${c.sourceLabel}`;
         const target = c.targetBlockSlug ? `existing block \`${c.targetBlockSlug}\`` : `new block "${c.newBlockTitle}" (${c.newBlockDescription || "no description given"}) in ${c.newStackTitle || "an existing stack — see recommendation"}`;
-        return `- ${tag("candidate", i)}Source: ${sourceLabel}\n  Target: ${target}\n\n  Recommended content:\n  > ${clipBody(c.recommendedContent, bodyBudget).replace(/\n/g, "\n  > ")}`;
+        const body = c.oldExcerpt && c.newExcerpt
+          ? renderExcerptPair(c.targetBlockSlug, c.oldExcerpt, c.newExcerpt, bodyBudget)
+          : `  Recommended content:\n  > ${clipBody(c.recommendedContent, bodyBudget).replace(/\n/g, "\n  > ")}`;
+        return `- ${tag("candidate", i)}Source: ${sourceLabel}\n  Target: ${target}\n\n${body}${decisionLine("candidate", i)}`;
       }).join("\n\n")
     : "No genuine candidate facts this run.");
 
@@ -582,6 +655,7 @@ export function renderReport({ windowLabel, result, manifest, site, missingFactR
   }
 
   // The example names an id THIS run actually has, so it never points at an absent finding.
+  if (manifest?.entries?.length) parts.push("", `To stop a finding coming back, add a backlog task titled \`[Fact Candidate] dismiss finding "<full id>": <why>\`. It stays dismissed until one of its facts changes.`);
   parts.push(...handleFooter(footerExample(manifest)));
   return parts.join("\n");
 }

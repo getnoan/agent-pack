@@ -63,7 +63,7 @@ export const LANE_RESPONSE = {
   get "approval"() { return `Re-assign ${agentName()} on this task and ${pronouns().subj} ${pronouns().verb("act")} on the draft above as it stands — that is the approval. Leave it unassigned to hold it, or close it to drop it.`; },
   /* An FDA escalation is a question the docs could not answer, so the person's
    * answer has to reach the draft. A bare re-assign drafts from the task text,
-   * which still says the docs lack it (two customers got that on 2026-11-04).
+   * which still says the docs lack it.
    * A comment re-arms only while the agent is off the task (support-scan.mjs),
    * so re-assigning first would leave the answer out. */
   get "fda-escalation"() { return `Comment on this task starting "@${agentName()}" with the answer for the customer, and ${pronouns().subj} ${pronouns().verb("email")} them from it on the next poll. Do not re-assign ${pronouns().obj} first: a re-assign sends without your answer.`; },
