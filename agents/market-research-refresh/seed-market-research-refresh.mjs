@@ -145,7 +145,25 @@ async function ensureResearchStack(log = console.log) {
   log(`\nCreated the "${RESEARCH_STACK.title}" stack with its four blocks, empty until the agent's first run.`);
 }
 
-seedAgentFacts({
+// A new project has only some managed stacks in use, and a block surfaces its fact only once its
+// stack is. So the stacks holding the blocks the grounding lists name are added before the
+// grounding check runs, or it would file a task for a block nobody can see.
+function groundingSlugs(text) {
+  return [...text.matchAll(/\[\[(GROUNDING_\w+)\]\]\n([\s\S]*?)\n\[\[\/\1\]\]/g)]
+    .flatMap(m => m[2].split("\n").map(l => l.trim()).filter(l => l && !l.startsWith("#")));
+}
+
+async function useGroundingStacks(log = console.log) {
+  const wanted = new Set(groundingSlugs(CONFIG_FACT));
+  const stacks = await noanGetAll("/stacks?per_page=100");
+  for (const st of stacks.filter(st => st.managed && st.inUse === false && (st.blocks || []).some(b => wanted.has(b.slug)))) {
+    await noanPost(`/stacks/${st.id}/use`, {});
+    log(`Added the "${st.title}" stack: the agent grounds its research in its blocks.`);
+  }
+}
+
+useGroundingStacks()
+  .then(() => seedAgentFacts({
   agent: "market research refresh",
   blocks: [
     {
@@ -161,7 +179,7 @@ seedAgentFacts({
       envVar: "MARKET_RESEARCH_PLAYBOOK_BLOCK_SLUG",
     },
   ],
-})
+}))
   .then(() => ensureResearchStack())
   .catch(e => {
     console.error(e?.message || e);
