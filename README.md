@@ -74,7 +74,9 @@ prints two `.env` lines, the Config and Playbook block slugs. Add them before th
 run, which stops without them. The stack the agent refreshes is the one titled
 "Market Research", and the seed script creates it with its four blocks when your
 project has none. If yours has another name, set `MARKET_RESEARCH_STACK_SLUG` before
-seeding and the seed leaves stacks alone. The worker then shows you exactly what it
+seeding and the seed leaves that stack alone. The seed also adds the managed stacks
+holding the blocks the agent grounds its research in, such as Strategy and Target
+Market, when your project has not added them yet. The worker then shows you exactly what it
 would post, without posting anything.
 
 Keep `MARKET_RESEARCH_FORCE_RUN=1` for a run by hand. Without it the agent does nothing
@@ -396,17 +398,18 @@ when it created the block in that same run.
 
 The Config and Playbook facts say how an agent behaves. The agents also ground
 their work in your **business** facts, and those start empty. Every block below
-is a managed block your workspace already has; nothing needs creating, only
-filling. An agent grounded in an empty block fails quietly, so the seed scripts
+is a managed block, so nothing needs creating, only filling. A new project starts
+with only some managed stacks in use and the rest on the Explore page, and a block
+shows its fact only once its stack is added. An agent grounded in an empty block fails quietly, so the seed scripts
 run a **grounding check** after seeding: for every block an agent reads that
 holds no fact, it files one task on your NOAN board saying which agent needs it
 and why, and never files the same one twice.
 
 | Agent | Reads | If empty |
 |---|---|---|
-| **customer support** | Product FAQs, Product Features, Product List | escalates most questions to a human |
-| **market research** | Product List, Strategy, Roadmap, FAQs, Monetization Model, Mission & Vision, Value Proposition, Brand Positioning; Ideal Customer, Sales Customer Profile, Buyer Persona, Buyer Segments, ICP Triggers, Audience Segments | researches with no anchor in what you already know |
-| **sales deck** | Brand Identity, Brand Tone, Brand Positioning, Value Proposition, Ideal Customer, Sales Customer Profile, plus your design-system block and the `## Slide design` section of the Deck Playbook | thin decks in no particular visual system |
+| **customer support** | FAQs, Features, Products and Services | escalates most questions to a human |
+| **market research** | Company Overview, Products and Services, Features, Roadmap, FAQs, Business Model, Mission and Values, Positioning, Goals, Launches and Announcements; Ideal Customer, Customer Segments, Customer Problems, How Customers Buy, Common Objections | researches with no anchor in what you already know |
+| **sales deck** | Visual Style, Tone of Voice, Positioning, Company Overview, Ideal Customer, Customer Segments, plus your design-system block and the `## Slide design` section of the Deck Playbook | thin decks in no particular visual system |
 | **activity report**, **fact alignment**, **newsletter** | your activity, the whole fact base, assets by tag | nothing to fill |
 
 Run the check by hand at any time:
