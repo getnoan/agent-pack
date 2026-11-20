@@ -182,6 +182,12 @@ function reconstruct(sseText) {
  */
 const RETRYABLE_STREAM_ERRORS = new Set(["overloaded_error", "api_error", "timeout_error"]);
 
+// undici throws a TypeError ("fetch failed" before headers, "terminated" mid-body) with the
+// socket error as its cause. Our own AbortSignal timeout is a DOMException, so it never matches.
+const DROPPED_CONNECTION_CODES = new Set(["ECONNRESET", "EPIPE", "ETIMEDOUT", "EAI_AGAIN", "UND_ERR_SOCKET"]);
+const isDroppedConnection = e => e instanceof TypeError && DROPPED_CONNECTION_CODES.has(e.cause?.code);
+const backoff = attempt => new Promise(r => setTimeout(r, Math.min(2000 * 2 ** attempt, 20000)));
+
 /* ---------------- prompt caching ----------------
  * Every request gets up to three ephemeral cache breakpoints: the tools
  * array (most stable — its own breakpoint so a system-prompt swap from a
@@ -271,7 +277,7 @@ const thinkingDefaultsOn = (m) => /^claude-(opus-5|sonnet-5)/.test(String(m || "
 /* How a model is told NOT to think. The 5.5 generation refuses `disabled` and asks for
  * `between_tools` ("To turn thinking off on this model, send between_tools"); the 5
  * generation refuses `between_tools`. Haiku has no thinking block at all and 400s on one.
- * Probed live 2026-10-13 against opus-5, sonnet-5-5 and haiku-4-5. */
+ * Checked against opus-5, sonnet-5-5 and haiku-4-5. */
 export function thinkingOff(model) {
   const m = String(model || "");
   if (/^claude-(opus|sonnet)-5-5/.test(m)) return { type: "between_tools" };
@@ -314,19 +320,31 @@ async function post(body, { retries = 4, timeoutMs = 15 * 60 * 1000, betas, usag
     };
     const sent = { ...withFallbacks(withCacheBreakpoints(body)), stream: true };
     dumpRequest(sent, headers);
-    const res = await fetch(messagesUrl(), {
-      method: "POST",
-      headers,
-      body: JSON.stringify(sent),
-      // Overall wall-clock guard per attempt; pings keep the body alive. A
-      // multi-search server-tool turn can legitimately run >15 min, so
-      // callers doing that pass a larger budget.
-      signal: AbortSignal.timeout(timeoutMs),
-    });
+    let res, raw;
+    try {
+      res = await fetch(messagesUrl(), {
+        method: "POST",
+        headers,
+        body: JSON.stringify(sent),
+        // Overall wall-clock guard per attempt; pings keep the body alive. A
+        // multi-search server-tool turn can legitimately run >15 min, so
+        // callers doing that pass a larger budget.
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      if (res.ok) raw = await res.text();
+    } catch (e) {
+      // The partial stream is lost with the socket, so a dropped attempt has no usage to ledger.
+      if (isDroppedConnection(e) && attempt < retries) {
+        await backoff(attempt);
+        continue;
+      }
+      if (isDroppedConnection(e)) e.message += ` (after ${attempt} retries)`;
+      throw e;
+    }
 
     if (res.status === 429 || res.status >= 500) {
       if (attempt >= retries) throw new Error(`Anthropic ${res.status} after ${attempt} retries`);
-      await new Promise(r => setTimeout(r, Math.min(2000 * 2 ** attempt, 20000)));
+      await backoff(attempt);
       continue;
     }
     if (!res.ok) {
@@ -335,7 +353,7 @@ async function post(body, { retries = 4, timeoutMs = 15 * 60 * 1000, betas, usag
     }
     let data;
     try {
-      data = reconstruct(await res.text());
+      data = reconstruct(raw);
     } catch (e) {
       // Same transient condition as the 429/5xx branch above, delivered by a different
       // route, so it gets the same budget and the same backoff. A stream that errored
@@ -344,7 +362,7 @@ async function post(body, { retries = 4, timeoutMs = 15 * 60 * 1000, betas, usag
       await recordFailedUsage(body.model, e.partialUsage, usageOpts?.action);
       if (RETRYABLE_STREAM_ERRORS.has(e.streamErrorType)) {
         if (attempt < retries) {
-          await new Promise(r => setTimeout(r, Math.min(2000 * 2 ** attempt, 20000)));
+          await backoff(attempt);
           continue;
         }
         e.message += ` (after ${attempt} retries)`;
@@ -620,7 +638,7 @@ export async function callClaudeToolLoop({
     if (toolCalls >= maxToolCalls || elapsedMs >= maxWallMs) {
       return { terminal: { type: "budget_exceeded", toolCalls, elapsedMs }, toolCalls, elapsedMs, lastText };
     }
-    // A loop that has read a lot (thirteen long facts, 2026-10-21) can outgrow the context window and 400 on the next
+    // A loop that has read a lot (thirteen long facts) can outgrow the context window and 400 on the next
     // request. Past the ceiling, the oldest tool results are cut to a stub, the newest few kept whole; the stub says so.
     trimConversation(messages);
 
@@ -654,8 +672,8 @@ export async function callClaudeToolLoop({
     }
 
     // A reply cut off at max_tokens in the middle of a tool call leaves that call's input unparsed (reconstruct keeps
-    // no input when the partial JSON does not parse). Running it with nothing made junk (an asset with no title,
-    // 2026-10-21), and the assistant turn then carried a tool_use with no input, which the next request 400s on.
+    // no input when the partial JSON does not parse). Running it with nothing made junk (an asset with no title),
+    // and the assistant turn then carries a tool_use with no input, which the next request 400s on.
     // Such a call is not run: its input becomes {} so the turn stays valid, and its result tells the model to split.
     const cutOff = data.stop_reason === "max_tokens";
     for (const tu of toolUses) if (!tu.input || typeof tu.input !== "object") { tu.input = {}; tu._cutOff = true; }

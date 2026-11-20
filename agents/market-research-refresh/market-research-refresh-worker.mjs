@@ -42,7 +42,7 @@ import { unescapeUi } from "./ui-escaping.mjs";
 import { assertModelKey } from "../shared/anthropic.mjs";
 import { sendReportEmail } from "../shared/resend.mjs";
 import { renderReportEmailHtml } from "../shared/markdown-email.mjs";
-import { findMarketResearchStack, planResearch, draftBlocks, renderReport } from "./market-research-refresh-agent.mjs";
+import { findMarketResearchStack, planResearch, draftBlocks, renderReport, condenseBlock, factSources, factWriteBody, FACT_CONTENT_MAX } from "./market-research-refresh-agent.mjs";
 
 const CONFIG_SLUG = process.env.MARKET_RESEARCH_CONFIG_BLOCK_SLUG;
 const PLAYBOOK_SLUG = process.env.MARKET_RESEARCH_PLAYBOOK_BLOCK_SLUG;
@@ -64,17 +64,14 @@ const EXPECTED_BLOCK_TITLES = ["Company Context", "Culture Signals", "Category D
 // Managed (every-workspace) slugs only. Workspace-specific ones — a workspace's own
 // pricing blocks carry a workspace hash — come from MARKET_RESEARCH_GROUNDING_EXTRA_SLUGS.
 const DEFAULT_COMPANY_CONTEXT_GROUNDING = [
-  "product-list", "product-strategy", "product-roadmap", "product-faq", "monetization-model",
-  "mission-vision", "value-proposition", "brand-positioning",
+  "startup-elevator-pitch", "product-list", "product-features", "product-roadmap", "product-faq",
+  "monetization-model", "mission-vision", "brand-positioning", "year-goals", "event-launches",
   ...(process.env.MARKET_RESEARCH_GROUNDING_EXTRA_SLUGS || "").split(",").map(x => x.trim()).filter(Boolean),
 ];
 // Customer Insights is the ICP block, so it is anchored on the company's own decisions about
-// who it sells to, never only on web research about buyers in general. Same set x-prospector
-// grounds its ICP scoring in. Audience Pain Points is deliberately excluded: thin and covered
-// by the others.
+// who it sells to, never only on web research about buyers in general.
 const DEFAULT_ICP_GROUNDING = [
-  "ideal-customer", "sales-customer-profile", "sales-buyer-persona", "sales-buyer-segments",
-  "sales-icp-triggers", "audience-segments",
+  "ideal-customer", "audience-segments", "startup-problem", "customer-buying-process", "customer-objections",
 ];
 // Category Dynamics is anchored on what the company sells and to whom. Without that anchor its
 // competitor list can only grow: the planner queries from the competitors already named, the
@@ -84,7 +81,7 @@ const DEFAULT_ICP_GROUNDING = [
 // run. Managed slugs only;
 // workspace-specific ones (an enterprise ICP, a product narrative) go in the config fence.
 const DEFAULT_CATEGORY_DYNAMICS_GROUNDING = [
-  "value-proposition", "brand-positioning", "ideal-customer", "audience-segments",
+  "product-list", "brand-positioning", "ideal-customer", "audience-segments",
 ];
 const GROUNDING_FACT_CHAR_CAP = 9000; // the multi-block grounding cap
 
@@ -352,17 +349,40 @@ async function main() {
     sourcesByBlock.set(b.blockSlug, used);
   }
 
+  // The cap is checked before anything is written, and in a dry run too, so a dry run shows
+  // whether next month's write would be rejected. Up to three condense passes; a block still over
+  // the cap is not written and the report says so.
+  const oversizeBlocks = [];
+  for (const b of draft.blocks) {
+    const title = blockTitleBySlug.get(b.blockSlug) || b.blockSlug;
+    if (b.refinedContent.length <= FACT_CONTENT_MAX) continue;
+    log(`  warn: ${title} drafted at ${b.refinedContent.length} chars, over the ${FACT_CONTENT_MAX} cap — condensing`);
+    const shorter = await condenseBlock({ title, content: b.refinedContent, log })
+      .catch(e => { log(`  warn: condensing ${title} failed: ${e.message}`); return ""; });
+    if (shorter && shorter.length <= FACT_CONTENT_MAX) {
+      log(`  condensed ${title}: ${b.refinedContent.length} -> ${shorter.length} chars`);
+      b.refinedContent = shorter;
+    } else {
+      log(`  error: ${title} is still over the cap (${shorter.length || b.refinedContent.length} chars after condensing) — it will not be written this run`);
+      b.skipWrite = true;
+      oversizeBlocks.push(title);
+    }
+  }
+
   const emails = await fetchGrowthTeamEmails().catch(e => { log(`  warn: recipient lookup failed: ${e.message}`); return []; });
 
   const dateLabel = now.toISOString().slice(0, 10);
   const noteReport = renderReport({
     dateLabel, result: draft, blockTitleBySlug, blockMismatchNote: mismatchNote,
-    failedPosts: [], sourcesByBlock, emptyRecipients: !emails.length,
+    failedPosts: [], oversizeBlocks, sourcesByBlock, emptyRecipients: !emails.length,
   });
 
   if (DRY_RUN) {
     log("  dry-run: would POST these facts —");
-    for (const b of draft.blocks) log(`    [${b.blockSlug}] (${b.classification})\n` + b.refinedContent);
+    for (const b of draft.blocks) {
+      const sources = factSources(sourcesByBlock.get(b.blockSlug));
+      log(`    [${b.blockSlug}] (${b.classification}, ${b.refinedContent.length} chars, ${sources.length} source(s))${b.skipWrite ? " SKIPPED: over the cap" : ""}\n` + b.refinedContent);
+    }
     log("  dry-run: would post this report —\n" + noteReport);
     log(`  dry-run: would email the report recipients (${emails.length} recipient(s)): ${emails.join(", ") || "(none found)"}`);
     return;
@@ -370,23 +390,27 @@ async function main() {
 
   const failedPosts = [];
   for (const b of draft.blocks) {
+    if (b.skipWrite) continue;
+    const sources = factSources(sourcesByBlock.get(b.blockSlug));
     try {
-      await noanPost("/facts", { blockSlug: b.blockSlug, content: b.refinedContent });
+      await noanPost("/facts", factWriteBody(b.blockSlug, b.refinedContent, sources));
     } catch (e) {
-      log(`  warn: fact POST failed for ${b.blockSlug}, retrying once: ${e.message}`);
+      // The retry leaves sources out: a page URL the API will not accept must not cost
+      // the block its refresh.
+      log(`  warn: fact POST failed for ${b.blockSlug}, retrying once${sources.length ? " without sources" : ""}: ${e.message}`);
       try {
-        await noanPost("/facts", { blockSlug: b.blockSlug, content: b.refinedContent });
+        await noanPost("/facts", factWriteBody(b.blockSlug, b.refinedContent, []));
       } catch (e2) {
         log(`  error: fact POST failed twice for ${b.blockSlug}: ${e2.message}`);
         failedPosts.push(blockTitleBySlug.get(b.blockSlug) || b.blockSlug);
       }
     }
   }
-  log(`  posted ${draft.blocks.length - failedPosts.length}/${draft.blocks.length} refreshed fact(s)`);
+  log(`  posted ${draft.blocks.length - failedPosts.length - oversizeBlocks.length}/${draft.blocks.length} refreshed fact(s)`);
 
   // Re-render with the real failedPosts list now that writes have actually happened.
   const finalReport = failedPosts.length
-    ? renderReport({ dateLabel, result: draft, blockTitleBySlug, blockMismatchNote: mismatchNote, failedPosts, sourcesByBlock, emptyRecipients: !emails.length })
+    ? renderReport({ dateLabel, result: draft, blockTitleBySlug, blockMismatchNote: mismatchNote, failedPosts, oversizeBlocks, sourcesByBlock, emptyRecipients: !emails.length })
     : noteReport;
 
   await postNote({

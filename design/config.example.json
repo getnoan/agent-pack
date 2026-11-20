@@ -7,13 +7,13 @@
   "deck_email_to": "",
   "deck_reply_to": "",
   "deck_fact_slugs": {
-    "visual": "brand-identity",
+    "visual": "brand-look-and-feel",
     "value": [
       "brand-tone",
       "brand-positioning",
-      "value-proposition",
+      "startup-elevator-pitch",
       "ideal-customer",
-      "sales-customer-profile"
+      "audience-segments"
     ],
     "design_system": "",
     "config": "",

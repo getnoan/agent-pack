@@ -21,6 +21,7 @@
     "fact-alignment-agent.mjs": "fact-alignment/fact-alignment-agent.mjs",
     "fact-alignment-worker.mjs": "fact-alignment/fact-alignment-worker.mjs",
     "fact-size-check.mjs": "fact-alignment/fact-size-check.mjs",
+    "fact-sources.mjs": "market-research-refresh/fact-sources.mjs",
     "general-wake.mjs": "customer-support/general-wake.mjs",
     "google-cal.mjs": "customer-support/google-cal.mjs",
     "grounding-check.mjs": "shared/grounding-check.mjs",

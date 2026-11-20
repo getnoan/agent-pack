@@ -5,7 +5,7 @@
  * filter, first.
  *
  * `q=` is a substring search on the stored searchText. It finds some addresses
- * and not others (33 of 40 when measured on 2026-11-04), so it can return a 200
+ * and not others (33 of 40 in one measurement), so it can return a 200
  * with zero items for a contact that plainly exists, which is indistinguishable
  * from "no such contact". A miss proves nothing.
  *

@@ -53,6 +53,7 @@ import {
   taskHasTag,
   postTaskComment,
   unparkTask, assignResolvedOwner, companyName } from "../shared/noan.mjs";
+import { createHash } from "node:crypto";
 import { assertModelKey } from "../shared/anthropic.mjs";
 import { planQueuedTask, contactCreatePlan, warnUnregisteredTriggers } from "./command-queue.mjs";
 import { runReplyAgent } from "./reply-agent.mjs";
@@ -61,8 +62,8 @@ import { runSupportAgent } from "./cs-agent.mjs";
 import { interpretInit, interpretReply, interpretCustomerAsk } from "./schedule-agent.mjs";
 import { freeBusy, computeSlots, slotStillFree, createEvent, calendarConfigured, CALENDAR_SECRET } from "./google-cal.mjs";
 import { parseScheduleFact } from "./slots.mjs";
-import { sendEmail } from "../shared/resend.mjs";
-import { supportScanCandidates, supportTaskContactId, supportCommentRearm, expiredCasesToSettle, expiredCaseAction, expiredCaseComment, caseTaskIds, caseAfterOutreach } from "./support-scan.mjs";
+import { sendEmail, sendEmailOnce } from "../shared/resend.mjs";
+import { supportScanCandidates, supportTaskContactId, supportCommentRearm, expiredCasesToSettle, expiredCaseAction, expiredCaseComment, caseTaskIds, caseAfterOutreach, approvedLinks, linksNotApproved, outreachSubject } from "./support-scan.mjs";
 import { steeringComments, normalizeComments, latestCursor, renderComments } from "../shared/task-comments.mjs";
 import { loadLocalState, saveLocalState, peekState } from "../shared/state-local.mjs";
 import { commanderAuthVerdict } from "./commander-auth.mjs";
@@ -421,7 +422,7 @@ async function escalate({ inbound, body, contact, reason, sourceTask = null }) {
   const subjectBase = `[${AGENT_NAME}] needs a human: ${inbound.subject || "(no subject)"}`;
   const subject = TEST_RECIPIENT ? `[TEST → ${ESCALATE_TO}] ${subjectBase}` : subjectBase;
 
-  await sendEmail({
+  const escalation = await sendEmailOnce({
     to,
     subject,
     html:
@@ -435,6 +436,7 @@ async function escalate({ inbound, body, contact, reason, sourceTask = null }) {
         : `<p>Reply directly to them at: ${senderEmail}</p>`),
     idempotencyKey: `${AGENT_NAME}:escalate:${inbound.id}`,
   });
+  if (escalation.deduped) log(`  escalation email for ${inbound.id} skipped: ${escalation.reason}`);
 
   if (!sourceTask) try {
     const created = await noanPost(`/tasks`, {
@@ -1207,7 +1209,7 @@ async function scanSupportTasks(getContacts, state) {
     catch (e) { log(`  warn: park note failed: ${e.message}`); }
     await parkForHuman(task, { lane: "cs", agent: "reply", assignees: HUMAN_ASSIGNEES, reason, status: null, log });
     await escalate({
-      inbound: { id: `task:${task.id}:${new Date().toISOString().slice(0, 10)}`, from: "(support task)", subject: task.title },
+      inbound: { id: `task:${task.id}:${new Date().toISOString().slice(0, 10)}:${createHash("sha256").update(reason).digest("hex").slice(0, 12)}`, from: "(support task)", subject: task.title },
       body: task.details || "", contact, reason, sourceTask: task,
     });
   };
@@ -1230,6 +1232,7 @@ async function scanSupportTasks(getContacts, state) {
     // An open case does not hold this task back: it joins the case (support-scan.mjs).
     if (state.cases?.[contact.email.toLowerCase()]?.status === "open") log(`  ${contact.email} has an open case — this outreach joins it`);
 
+    const brief = guidance[task.id] ? `${task.details || ""}\n\nTeammate guidance (comments on the task):\n${guidance[task.id]}` : task.details;
     let verdict;
     try {
       const memoContext = await fetchContactMemos(contact.id);
@@ -1237,7 +1240,7 @@ async function scanSupportTasks(getContacts, state) {
         inbound: { id: `task:${task.id}`, from: "(support task)", subject: task.title },
         body: "", contact, brain, memoContext,
         // a teammate's comment that re-armed the task steers the draft
-        outreach: { title: task.title.replace(LEGACY_MARKER_RX, "").trim(), details: guidance[task.id] ? `${task.details || ""}\n\nTeammate guidance (comments on the task):\n${guidance[task.id]}` : task.details },
+        outreach: { title: task.title.replace(LEGACY_MARKER_RX, "").trim(), details: brief, approvedLinks: approvedLinks(guidance[task.id]) },
         agentName: AGENT_NAME,
       });
     } catch (e) {
@@ -1256,22 +1259,22 @@ async function scanSupportTasks(getContacts, state) {
         : `the outreach draft could not be sent (${verdict.action} verdict, ${verdict.reply_html ? "draft present" : "no draft"}): ${why} — fix the task details or the contact.`, contact);
       continue;
     }
-    const rogue = badLinks(verdict.reply_html, verdict.reply_text);
+    const rogue = linksNotApproved(badLinks(verdict.reply_html, verdict.reply_text), guidance[task.id]);
     if (rogue.length) {
-      await park(task, `the outreach draft contained non-NOAN links (${rogue.join(", ")}) — fix the brief so the answer needs none.`, contact);
+      await park(task, `the outreach draft contained non-NOAN links (${rogue.join(", ")}) — fix the brief so the answer needs none, or approve the link in a comment that addresses ${AGENT_NAME}.`, contact);
       continue;
     }
     const resolved = verdict.action === "resolve";
+    const subject = outreachSubject(verdict, brief, "Checking in from NOAN");
     if (DRY_RUN) {
       const joins = state.cases?.[contact.email.toLowerCase()]?.status === "open";
-      log(`  dry-run: would send the ${verdict.action} outreach to ${contact.email}${joins ? ", joining its open case" : ""} — "${(verdict.subject || task.title).slice(0, 80)}"`);
+      log(`  dry-run: would send the ${verdict.action} outreach to ${contact.email}${joins ? ", joining its open case" : ""} — "${subject.slice(0, 80)}"`);
       continue;
     }
 
     // claim the task, send the outreach, open the case
     if (!resolved) { try { await noanPatch(`/tasks/${task.id}`, { status: "in-progress" }); } catch {} }
 
-    const subject = (verdict.subject || task.title.replace(LEGACY_MARKER_RX, "").trim() || "Checking in from NOAN").slice(0, 120);
     await sendEmail({
       to: TEST_RECIPIENT || contact.email,
       subject: TEST_RECIPIENT ? `[TEST → ${contact.email}] ${subject}` : subject,
@@ -1292,6 +1295,9 @@ async function scanSupportTasks(getContacts, state) {
     } catch {}
     state.taskOutreach[task.id] = { at: now, status: "sent" };
     await saveState(state);
+    // Parks already leave a comment; without this a sent task reads as stuck.
+    try { await postTaskComment(task.id, `Sent the ${resolved ? "answer" : "outreach"} to ${TEST_RECIPIENT || contact.email}, subject "${subject}".${resolved ? "" : " The case stays open until they reply."}`); }
+    catch (e) { log(`  warn: sent note failed: ${e.message}`); }
     if (resolved) {
       // Answered in full: the task is done, not in-progress awaiting a reply.
       try { await noanPatch(`/tasks/${task.id}`, { status: "done", completed: true }); }

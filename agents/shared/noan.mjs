@@ -258,16 +258,14 @@ const withPerPage = (path, n) => withParam(path, "per_page", n, { drop: ["page"]
 /** Read every page of a list endpoint — the query filter included, on every page
  *  (see sweepOnce: the API's own next link loses it).
  *
- *  Built for two silent defects in GET /contacts. The API has since added an id tiebreak to
- *  that sort, and a live read on 2026-11-04 returned every row, all unique, at per_page 100 and
- *  50 (one run each). Other list endpoints were not re-measured, so the guards stay:
+ *  Guards against two silent pagination defects. GET /contacts now sorts with an id tiebreak,
+ *  but other list endpoints aren't proven, so the guards stay:
  *
- *  1. THE ROWS WERE NOT UNIQUE. Pagination ran over a non-deterministic sort with no
- *     tiebreaker, so a single pass returned some rows twice and never returned others.
- *     Rows are deduped by id.
+ *  1. ROWS MAY NOT BE UNIQUE. Paginating a sort with no tiebreaker can return some rows
+ *     twice and never return others. Rows are deduped by id.
  *
- *  2. A DIFFERENT FEW PERCENT WAS MISSED AT EACH PAGE SIZE. A union across page sizes
- *     recovered most of it, but not all.
+ *  2. EACH PAGE SIZE CAN MISS A DIFFERENT FEW PERCENT. A union across page sizes
+ *     recovers most of it, but not all.
  *
  *  The extra passes only run when the first one comes up short against the server's own
  *  meta.totalItems, so endpoints that paginate correctly — /tasks, /notes, /assets all do —
@@ -536,10 +534,10 @@ export function isAgentIdentity({ id = null, role = null } = {}) {
   return !!id && agentIdentityIds().includes(id);
 }
 
-/** Creating stacks and blocks is a ROLE permission in NOAN (fact.update.stacks), held
- *  only by owner and executive. The agent (role bot) and every other role get
- *  403 MissingPermission on POST /stacks and POST /stacks/{id}/blocks whatever the
- *  key's scopes, so say that rather than echo the 403. A 403 with another code
+/** Creating stacks and blocks needs two things in NOAN: the key's fact:write scope,
+ *  and a role holding fact.update.stacks (owner, executive, and the agent, role bot). Missing either is
+ *  403 MissingPermission on POST /stacks and POST /stacks/{id}/blocks, and the
+ *  code can't tell which, so name both rather than echo the 403. A 403 with another code
  *  (ResourceNotAllowed: a managed stack) is a different refusal. Reads both error
  *  shapes: this module's e.noan and a plain client's e.status + e.body. */
 export function isStructureRoleRefusal(e) {
@@ -551,7 +549,7 @@ export function isStructureRoleRefusal(e) {
 /** What to tell the person when isStructureRoleRefusal(e). `what` names the
  *  stack or block, e.g. `the "Brand" stack`. */
 export function structureRoleMessage(what) {
-  return `NOAN refused to create ${what}: only a person with the owner or executive role can create stacks and blocks, whatever the key's settings. Ask one to create it in the NOAN app, then try again.`;
+  return `NOAN refused to create ${what}: that needs a fact:write key owned by the agent or an owner/executive. Fix the key in NOAN settings, or have an owner create it in the NOAN app, then try again.`;
 }
 
 /** Who the key belongs to, for code that acts on GET /me's identity.
@@ -599,6 +597,27 @@ export function taskAssignedToVerity(task) {
  *  human already closed. */
 export function taskTriggers(task, tagName) {
   return !task?.completed && taskHasTag(task, tagName) && taskAssignedToVerity(task);
+}
+
+/** Tasks carrying a tag, filtered by the API (`GET /tasks?tag_id=`) rather than
+ *  by reading a whole column and filtering here. Fewer pages under the
+ *  200/min limit, and noanGetAll rebuilds each page URL so the filter holds
+ *  past page one.
+ *
+ *  Callers keep their own predicate (taskTriggers / taskHasTag): this narrows
+ *  the read, it does not decide what triggers. If the tag id cannot be
+ *  resolved (tag renamed, or a key that reads no tags), it falls back to the
+ *  unfiltered read, so a poll degrades to slower rather than to silently empty.
+ */
+export async function tasksTagged(tagName, { status = null, getAll = noanGetAll, tagId = findTagId, log = console.warn } = {}) {
+  const qs = new URLSearchParams({ per_page: "100" });
+  if (status) qs.set("status", status);
+  let id = null, why = "no tag by that name";
+  try { id = await tagId(tagName); }
+  catch (e) { why = `lookup failed: ${e.message}`; }
+  if (id) qs.set("tag_id", id);
+  else log(`  warn: tag "${tagName}" unresolved (${why}) - reading tasks unfiltered`);
+  return getAll(`/tasks?${qs}`);
 }
 
 /* ---------------- task idempotency ---------------- */
@@ -1274,9 +1293,8 @@ export function taskContactId(task) {
  * GET /contacts?email= is the lookup: an exact, case-insensitive filter.
  *
  * GET /contacts?q= is a substring search on the stored searchText. It finds some
- * addresses and misses others (33 of 40 when measured on 2026-11-04, cause not
- * traced), and a 200-with-nothing reads exactly like "no such contact", so a miss
- * proves nothing.
+ * addresses and misses others (cause not traced), and a 200-with-nothing reads
+ * exactly like "no such contact", so a miss proves nothing.
  *
  * A missed lookup creates a duplicate contact, and anything derived from it
  * (the website chat's `isSubscriber`) is wrong too. So: ask the filter first. If
@@ -1307,13 +1325,11 @@ const CONTACT_SWEEP_ROUNDS = 2;
 
 /** Contacts the list endpoint CANNOT return, by id. Supplied by the deployment, EMPTY by default.
  *
- *  `GET /contacts` used to paginate on a non-unique sort key with no tiebreaker, so rows inside a
- *  large tie group could be returned twice or never. Where a project had big tie clusters (many
- *  contacts created on one exact timestamp), a union sweep across page sizes topped out below the
- *  total `meta.totalItems` reports, missing the same rows every run. The sort now has an id
- *  tiebreak, and a live read on 2026-11-04 returned every row.
+ *  A list sort with no tiebreaker can return rows inside a large tie group (many contacts created
+ *  on one exact timestamp) twice or never, and a union sweep across page sizes then tops out below
+ *  `meta.totalItems`, missing the same rows every run.
  *
- *  Those rows always resolved by id. So the miss path reads them directly, and the dedupe is not
+ *  Those rows still resolve by id. So the miss path reads them directly, and the dedupe is not
  *  blind to the addresses most at risk of being duplicated — there is no DELETE /contacts, so
  *  each of those duplicates would be permanent.
  *
@@ -1363,10 +1379,9 @@ async function contactSnapshot({ rounds = 1 } = {}) {
   }
   let reportedTotal = _contactsByEmailCache.reportedTotal;
 
-  // CONVERGED, not "reached meta.totalItems". A live read on 2026-11-04 did reach the total, but
-  // this sweep only runs when the email filter cannot be trusted, and it must not depend on one
-  // read matching one count. A full extra pass that finds nobody new means we have everything the
-  // API is willing to give.
+  // CONVERGED, not "reached meta.totalItems". This sweep only runs when the email filter cannot
+  // be trusted, and it must not depend on one read matching one count. A full extra pass that
+  // finds nobody new means we have everything the API is willing to give.
   let converged = false;
   for (let round = 0; round < rounds; round++) {
     const before = byId.size;
@@ -1408,9 +1423,8 @@ async function contactsByEmailFilter(needle) {
  *  CONVERGED: a full extra pass that found nobody new means we have everything the API is
  *  willing to hand over, which is the most any client can establish.
  *
- *  It is deliberately NOT "we saw every row meta.totalItems claims". A live read on 2026-11-04 did
- *  return every row, but that was one read of each page size, and if the list ever comes up short
- *  again a gate on the count would leave every miss untrusted.
+ *  It is deliberately NOT "we saw every row meta.totalItems claims": if the list ever comes up
+ *  short, a gate on the count would leave every miss untrusted.
  *
  *  The API's exact email filter answers first, in one request (contactsByEmailFilter). The sweep
  *  below runs only when that filter cannot be trusted, and its miss path is expensive on purpose:
@@ -1486,8 +1500,7 @@ function rememberContact(contact) {
  *  Use this whenever you hold an id. `GET /contacts?q=<id>` is the wrong tool (q searches
  *  searchText, which is built from a contact's details and not its id, and a miss proves nothing),
  *  and scanning one list page misses every contact past the first 100,
- *  which is most of them. The follow-up worker did both until 2026-10-30, so a task carrying
- *  a valid Contact ID fell back to a bare email and the reach check refused it.
+ *  which is most of them.
  *
  *  The response nests under `contact`. A 404 is null; anything else throws, so an outage
  *  is not mistaken for a missing contact. */

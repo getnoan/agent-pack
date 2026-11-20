@@ -185,6 +185,41 @@ const MARK_STACK_RX = /^\[Fact Candidate\]\s*mark stack\s*"([^"]+)"\s*as relevan
 // never a gap.
 const MARK_EMPTY_RX = /^\[Fact Candidate\]\s*mark block\s*"([^"]+)"\s*as deliberately empty/i;
 
+// A person's ruling on a finding. Same shape as the two marks above: the ruling goes into state
+// and the task is closed out. The report's id resolves to what the finding was about, because
+// the model has no memory of past reports and would otherwise raise it again every week.
+const DISMISS_RX = /^\[Fact Candidate\]\s*dismiss finding\s*"([^"]+)"\s*(?::\s*(.*))?$/i;
+const DISMISSED_FINDINGS_KEPT = 100;
+
+/** Pure: turn dismissal tasks into ledger rows, by looking each id up in the retained manifests.
+ *  An id that resolves to nothing is returned, not dropped, so its task stays open and the report
+ *  can name it. */
+export function resolveDismissals(dismissTasks, manifests, existing = [], nowIso = new Date().toISOString()) {
+  const entries = Object.values(manifests || {}).flatMap(m => m?.entries || []);
+  const byId = new Map(existing.map(d => [d.id, d]));
+  const resolved = [], unresolved = [];
+  for (const d of dismissTasks) {
+    const entry = entries.find(e => e.id.toLowerCase() === d.id.toLowerCase());
+    if (!entry) { unresolved.push(d); continue; }
+    const blockSlugs = entry.blockSlugs || [entry.blockSlug].filter(Boolean);
+    byId.set(entry.id, { id: entry.id, label: entry.label, blockSlugs, reason: d.reason || "", dismissedAt: nowIso });
+    resolved.push(d);
+  }
+  return { dismissedFindings: [...byId.values()].slice(-DISMISSED_FINDINGS_KEPT), resolved, unresolved };
+}
+
+/** Pure: a dismissal holds until a fact on one of its blocks is approved after it. A row that
+ *  names no block can never be checked, so it expires and the finding can be raised again. */
+export function liveDismissals(dismissed, approvedAtOf) {
+  const kept = [], expired = [];
+  for (const d of dismissed || []) {
+    const slugs = d.blockSlugs || [d.blockSlug].filter(Boolean);
+    const changed = !slugs.length || slugs.some(s => (approvedAtOf(s) || "") > (d.dismissedAt || ""));
+    (changed ? expired : kept).push(d);
+  }
+  return { kept, expired };
+}
+
 // The prefix above is anchored and bracketed, so "Fact candidate: ..." — or the same title
 // with a leading space — matches nothing and the capture is dropped with no error, no warning
 // and no trace in the report. That silence is the failure mode worth designing against: the
@@ -204,16 +239,19 @@ export function isMalformedCapture(title) {
 export function splitCaptureQueue(flagged) {
   const markStackTasks = [];
   const markEmptyTasks = [];
+  const dismissTasks = [];
   const genericCandidateTasks = [];
   for (const t of flagged) {
     const title = t.title || "";
     const stack = title.match(MARK_STACK_RX);
     const empty = title.match(MARK_EMPTY_RX);
+    const dismiss = title.match(DISMISS_RX);
     if (stack) markStackTasks.push({ task: t, stackSlug: stack[1] });
     else if (empty) markEmptyTasks.push({ task: t, blockSlug: empty[1] });
+    else if (dismiss) dismissTasks.push({ task: t, id: dismiss[1], reason: (dismiss[2] || t.details || "").trim().slice(0, 300) });
     else genericCandidateTasks.push(t);
   }
-  return { markStackTasks, markEmptyTasks, genericCandidateTasks };
+  return { markStackTasks, markEmptyTasks, dismissTasks, genericCandidateTasks };
 }
 
 async function loadCaptureQueue() {
@@ -385,7 +423,9 @@ async function main() {
   const brain = await loadAgentBrain();
 
   // 2. Candidates
-  const { markStackTasks, markEmptyTasks, genericCandidateTasks, malformedCaptures } = await loadCaptureQueue();
+  const { markStackTasks, markEmptyTasks, dismissTasks, genericCandidateTasks, malformedCaptures } = await loadCaptureQueue();
+  const { dismissedFindings: ruledFindings, resolved: resolvedDismissals, unresolved: unresolvedDismissals } = resolveDismissals(dismissTasks, prior.manifests, Array.isArray(prior.dismissedFindings) ? prior.dismissedFindings : [], nowIso);
+  if (unresolvedDismissals.length) log(`  warn: ${unresolvedDismissals.length} dismissal(s) name an id no retained report has, left open: ${unresolvedDismissals.map(d => d.id).join(", ")}`);
   const allNotesInWindow = await fetchNotesInWindow(windowStartIso, windowEndIso);
   const notesCandidates = allNotesInWindow.filter(n => !skipNoteFromScan(n.title, n.content));
   log(`  ${genericCandidateTasks.length} capture-queue candidate(s), ${markStackTasks.length} relevance correction(s), ${markEmptyTasks.length} deliberately-empty mark(s), ${notesCandidates.length} notes-scan candidate(s)`);
@@ -397,6 +437,8 @@ async function main() {
 
   const { stackTitleBySlug, inScopeBlocks } = await loadScope(updatedRelevantStackSlugs);
   const factsByBlock = await loadAllFacts();
+  const { kept: dismissedFindings, expired: expiredDismissals } = liveDismissals(ruledFindings, slug => factsByBlock.get(slug)?.approvedAt);
+  if (expiredDismissals.length) log(`  ${expiredDismissals.length} dismissal(s) expired, a fact they involve changed since: ${expiredDismissals.map(d => d.id).join(", ")}`);
   // Every fact in the project, in scope or not: a fact past the cap cannot be rewritten once it
   // is enforced, wherever it lives (fact-size-check.mjs).
   const factSizes = factSizeFindings([...factsByBlock.values()], { registry: registrySlugs() });
@@ -406,11 +448,11 @@ async function main() {
   const stackTitleOf = b => stackTitleBySlug.get(b.stack?.slug) || b.stack?.slug || "unknown stack";
   const filledInScopeBlocks = inScopeBlocks
     .filter(b => factsByBlock.has(b.slug))
-    .map(b => ({ slug: b.slug, title: b.title, stackTitle: stackTitleOf(b), content: capFact(factsByBlock.get(b.slug).content) }));
+    .map(b => ({ slug: b.slug, title: b.title, description: b.description, stackTitle: stackTitleOf(b), approvedAt: factsByBlock.get(b.slug).approvedAt, content: capFact(factsByBlock.get(b.slug).content) }));
   // A gap an App Kit page reads through `fields <-` (a Space's Brief) only shows `Label: value`
   // lines, so its draft is told that shape up front and checked against it afterwards.
   const fieldsBound = fieldsBoundBlocks(gapBlocks.map(b => ({ slug: b.slug, title: b.title, stackTitle: stackTitleOf(b) })), [...factsByBlock.values()].map(f => f.content));
-  const gapBlocksWithTitles = gapBlocks.map(b => ({ slug: b.slug, title: b.title, stackTitle: stackTitleOf(b), fields: fieldsBound.get(b.slug) || null }));
+  const gapBlocksWithTitles = gapBlocks.map(b => ({ slug: b.slug, title: b.title, description: b.description, stackTitle: stackTitleOf(b), fields: fieldsBound.get(b.slug) || null }));
   if (fieldsBound.size) log(`  ${fieldsBound.size} gap(s) rendered by an app as Label: value fields: ${[...fieldsBound.values()].map(f => `${f.title} in "${f.app}"`).join(", ")}`);
 
   const anomalies = await computeAnomalies(factsByBlock, inScopeBlocks);
@@ -424,6 +466,7 @@ async function main() {
     taskCandidates: genericCandidateTasks,
     notesCandidates,
     anomalies,
+    dismissedFindings,
     brain,
   }, { log });
   const misshapen = flagFieldsDrafts(result.gaps, fieldsBound);
@@ -456,7 +499,7 @@ async function main() {
   const applicableCount = manifest.entries.filter(e => e.applicable).length;
   log(`  manifest ${manifest.windowKey}: ${manifest.entries.length} recommendation(s), ${applicableCount} with a concrete block + drafted content`);
 
-  const reportOpts = { windowLabel, result, manifest, site, missingFactReviewTag, malformedCaptures, factSizes, deliberatelyEmptyCount: skippedEmpty.length, emptyRecipients: false };
+  const reportOpts = { windowLabel, result, manifest, site, missingFactReviewTag, malformedCaptures, unresolvedDismissals, factSizes, deliberatelyEmptyCount: skippedEmpty.length, emptyRecipients: false };
   // The email carries the report in full. The note is the same report with its quoted bodies
   // clipped to whatever fits the note character cap — see renderReportForNote. Both are
   // rendered here so the dry-run shows exactly what each channel would receive.
@@ -507,15 +550,16 @@ async function main() {
 
   // Close out consumed [Fact Candidate] tasks (capture-queue candidates, relevance corrections
   // and deliberately-empty marks).
-  for (const t of [...genericCandidateTasks, ...markStackTasks.map(m => m.task), ...markEmptyTasks.map(m => m.task)]) {
+  // A dismissal that resolved to nothing stays open so correcting its id is enough.
+  for (const t of [...genericCandidateTasks, ...markStackTasks.map(m => m.task), ...markEmptyTasks.map(m => m.task), ...resolvedDismissals.map(d => d.task)]) {
     try {
       await noanPatch(`/tasks/${t.id}`, { completed: true, status: "done" });
     } catch (e) {
       log(`  warn: failed to close out task ${t.id}: ${e.message}`);
     }
   }
-  if (genericCandidateTasks.length + markStackTasks.length + markEmptyTasks.length) {
-    log(`  closed out ${genericCandidateTasks.length + markStackTasks.length + markEmptyTasks.length} consumed [Fact Candidate] task(s)`);
+  if (genericCandidateTasks.length + markStackTasks.length + markEmptyTasks.length + resolvedDismissals.length) {
+    log(`  closed out ${genericCandidateTasks.length + markStackTasks.length + markEmptyTasks.length + resolvedDismissals.length} consumed [Fact Candidate] task(s)`);
   }
 
   const emails = await fetchGrowthTeamEmails().catch(e => { log(`  warn: recipient lookup failed, skipping email: ${e.message}`); return []; });
@@ -543,6 +587,7 @@ async function main() {
     lastRun: nowIso,
     relevantStackSlugs: updatedRelevantStackSlugs,
     deliberatelyEmptyBlockSlugs: updatedDeliberatelyEmptyBlockSlugs,
+    dismissedFindings,
     manifests,
   });
   log(`  saved state (${Object.keys(manifests).length} manifest(s) retained)`);
