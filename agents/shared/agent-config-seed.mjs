@@ -20,7 +20,7 @@
  * Used by every seed-*.mjs in this pack and by the pack's bootstrap registry.
  */
 
-import { noanGet, noanGetAll, noanPost } from "./noan.mjs";
+import { noanGet, noanGetAll, noanPost, findTagId, PARK_TAG } from "./noan.mjs";
 
 export const STACK_TITLE = process.env.AGENT_CONFIG_STACK_TITLE || "Agent Config";
 
@@ -139,6 +139,20 @@ async function createBlockIn(stackId, title, description) {
   return { slug, created: true };
 }
 
+export const PARK_TAG_INSTRUCTIONS =
+  "An agent puts this on a task when it hands the task to a person, and assigns that person. " +
+  "Do what the task asks; its last line says how to hand it back.";
+
+async function ensureParkTag(log) {
+  if (await findTagId(PARK_TAG)) return;
+  try {
+    await noanPost("/tags", { name: PARK_TAG, usageInstructions: PARK_TAG_INSTRUCTIONS });
+    log(`  created the "${PARK_TAG}" tag`);
+  } catch (e) {
+    log(`  could not create the "${PARK_TAG}" tag (${e?.message || e}); create it in NOAN under Settings → Tags`);
+  }
+}
+
 /**
  * Seed one agent's facts.
  *
@@ -169,6 +183,7 @@ export async function seedAgentFacts({ agent, blocks }, { log = console.log } = 
     }
   }
 
+  await ensureParkTag(log);
   log(wrote ? `\n${wrote} fact(s) written.` : "\nNothing to do — everything was already in place.");
   log("\nAdd to .env:");
   for (const [k, v] of Object.entries(env)) log(`${k}=${v}`);
