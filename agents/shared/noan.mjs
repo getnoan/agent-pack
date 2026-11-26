@@ -203,6 +203,27 @@ export const noanPost  = (p, b)     => call("POST", p, b);
 export const noanPatch = (p, b)     => call("PATCH", p, b);
 export const noanPut   = (p, b)     => call("PUT", p, b);
 
+const MCP_URL = BASE.replace(/\/v1$/, "/mcp");
+
+/** Call one tool on the API's MCP server, for the few that have no REST route.
+ *  Returns the tool's structured result, or { error } with the tool's own message. */
+export async function noanMcpTool(name, args) {
+  const res = await fetch(MCP_URL, {
+    method: "POST",
+    headers: { ...headers(), Accept: "application/json, text/event-stream" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } }),
+  });
+  const text = await res.text();
+  if (!res.ok) throw tag(new Error(`NOAN MCP ${name} → ${res.status} ${text.slice(0, 200)}`), res.status);
+  // The server answers as an event stream: one `data:` line holds the JSON-RPC reply.
+  const json = text.split("\n").find(l => l.startsWith("data:"))?.slice(5) ?? text;
+  const reply = JSON.parse(json);
+  if (reply.error) throw tag(new Error(`NOAN MCP ${name} → ${reply.error.message}`), null);
+  const r = reply.result;
+  if (r.isError) return { error: r.content?.map(c => c.text).join("\n") || `${name} failed` };
+  return r.structuredContent ?? JSON.parse(r.content[0].text);
+}
+
 /** The same path with one query param replaced and, optionally, others dropped
  *  (page/per_page are the two we rewrite). Every OTHER param must survive, see sweepOnce. */
 const withParam = (path, key, value, { drop = [] } = {}) => {

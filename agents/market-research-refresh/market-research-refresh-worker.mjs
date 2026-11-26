@@ -38,7 +38,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 import { noanGet, noanGetAll, noanPost, assertNoanKey, postNote } from "../shared/noan.mjs";
-import { unescapeUi } from "./ui-escaping.mjs";
+import { unescapeUi } from "../shared/ui-escaping.mjs";
 import { assertModelKey } from "../shared/anthropic.mjs";
 import { sendReportEmail } from "../shared/resend.mjs";
 import { renderReportEmailHtml } from "../shared/markdown-email.mjs";

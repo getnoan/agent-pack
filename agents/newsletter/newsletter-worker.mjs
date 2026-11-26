@@ -40,7 +40,7 @@ import fs from "node:fs";
 import { pathToFileURL } from "node:url";
 import { noanGet, noanGetAll, noanPost, noanPatch, allTasksOnce, findTagId, findContactByEmail, postNote, assertNoanKey, parkForHuman } from "../shared/noan.mjs";
 import { buildDetails, appendRun, runLine, runUrl } from "./task-run-lines.mjs";
-import { verdictFromComments, approvalBindingsOk } from "./newsletter-approval.mjs";
+import { verdictFromComments, approvalBindingsOk } from "../shared/newsletter-approval.mjs";
 import { defaultCommanders, normalizeComments } from "../shared/task-comments.mjs";
 import { sendEmail, sendBatch, cancelEmail, BATCH_MAX } from "../shared/resend.mjs";
 import { loadLocalState, saveLocalState } from "../shared/state-local.mjs";
