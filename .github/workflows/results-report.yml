@@ -1,0 +1,78 @@
+name: results report
+
+on:
+  schedule:
+    - cron: "17 7 * * *"   # reads approvals and redrafts a saved report whose facts changed
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "1 = show what would happen and write nothing. Leave at 1 until you have read a dry run."
+        required: false
+        default: "1"
+      report_type:
+        description: "The document to draft now: earnings release, trading update or results call remarks. Empty only reads approvals and checks for changed facts."
+        required: false
+        default: ""
+
+concurrency:
+  group: results-report
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+      - name: Configured?
+        id: configured
+        env:
+          NOAN_PERSONAL_API_KEY: ${{ secrets.NOAN_PERSONAL_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          ready=1
+          MODEL_KEY="${ANTHROPIC_API_KEY:-$LLM_API_KEY}"
+          for name in NOAN_PERSONAL_API_KEY MODEL_KEY DATABASE_URL; do
+            if [ -z "${!name}" ]; then
+              case "$name" in MODEL_KEY) name=ANTHROPIC_API_KEY ;; esac
+              echo "not configured yet: $name"
+              ready=0
+            fi
+          done
+          if [ "$ready" = 0 ]; then
+            echo "::notice::This repository is not configured yet. Add the secrets named above under Settings → Secrets and variables → Actions. Nothing ran."
+          fi
+          echo "ready=$ready" >> "$GITHUB_OUTPUT"
+      - name: Run
+        if: steps.configured.outputs.ready == '1'
+        run: node agents/results-report/results-report-worker.mjs
+        env:
+          AGENT_NAME: ${{ vars.AGENT_NAME }}
+          AGENT_PRONOUNS: ${{ vars.AGENT_PRONOUNS }}
+          COMPANY_NAME: ${{ vars.COMPANY_NAME }}
+          AGENT_IDENTITY_IDS: ${{ vars.AGENT_IDENTITY_IDS }}
+          COMMANDERS: ${{ vars.COMMANDERS }}
+          HUMAN_IDENTITIES: ${{ vars.HUMAN_IDENTITIES }}
+          PARK_ASSIGNEES_ENG: ${{ vars.PARK_ASSIGNEES_ENG }}
+          PARK_ASSIGNEES_RESULTS_REPORT: ${{ vars.PARK_ASSIGNEES_RESULTS_REPORT }}
+          TEAMMATE_DOMAIN: ${{ vars.TEAMMATE_DOMAIN }}
+          NOAN_PERSONAL_API_KEY: ${{ secrets.NOAN_PERSONAL_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          ANTHROPIC_BASE_URL: ${{ vars.ANTHROPIC_BASE_URL }}
+          STATE_BACKEND: ${{ vars.STATE_BACKEND || 'postgres' }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DRY_RUN: ${{ github.event.inputs.dry_run || vars.DRY_RUN || '1' }}
+          RESULTS_REPORT_CONFIG_BLOCK_SLUG: ${{ vars.RESULTS_REPORT_CONFIG_BLOCK_SLUG }}
+          RESULTS_REPORT_PLAYBOOK_BLOCK_SLUG: ${{ vars.RESULTS_REPORT_PLAYBOOK_BLOCK_SLUG }}
+          RESULTS_REPORT_STACKS: ${{ vars.RESULTS_REPORT_STACKS }}
+          RESULTS_REPORT_MODEL: ${{ vars.RESULTS_REPORT_MODEL }}
+          RESULTS_REPORT_TYPE: ${{ github.event.inputs.report_type }}
