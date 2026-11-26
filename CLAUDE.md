@@ -2,7 +2,7 @@
 
 # agent-pack
 
-NOAN's open-source agent pack (MIT): six agents that run on GitHub Actions against a customer's own NOAN project. Node 22 ESM (`.mjs`) with no `package.json` and no dependencies. The sales deck is stdlib Python in `design/`.
+NOAN's open-source agent pack (MIT): seven agents that run on GitHub Actions against a customer's own NOAN project. Node 22 ESM (`.mjs`) with no `package.json` and no dependencies. The sales deck is stdlib Python in `design/`.
 
 ## Public repo
 

@@ -10,8 +10,8 @@
  * needed a model to decide what someone meant would be a worse gate than the
  * tag it replaces.
  */
-import { agentName } from "../shared/required-env.mjs";
-import { commentText } from "../shared/task-comments.mjs";
+import { agentName } from "./required-env.mjs";
+import { commentText } from "./task-comments.mjs";
 
 /** Anchored at the START of the body, never merely contained in it.
  *  "I would approve this if the CTA were shorter" must not send to 290 people,
