@@ -8,7 +8,7 @@ project. Edit one of those facts in the NOAN app and that agent behaves
 differently on its next run — no deploy, no pull request, no engineer. That is
 not a configuration convenience bolted on the side; it is the whole idea.
 
-> **Status: beta.** All six agents are here — workers, workflows, starter
+> **Status: beta.** All seven agents are here — workers, workflows, starter
 > Config and Playbook facts, and the tests that travel with them — cut from our
 > production fleet by a one-way export. Every agent starts in safe mode. Treat
 > your first run as a rehearsal: read the dry run before switching anything
@@ -26,6 +26,7 @@ not a configuration convenience bolted on the side; it is the whole idea.
 | **customer support** | Answers inbound email from your facts, or escalates to a human. Can also book meetings | Google Workspace, only for booking (see *Scheduling meetings*) |
 | **sales deck** | Builds a personalised deck for a named prospect, renders a PDF, sends it or parks it for approval | headless Chrome, object storage |
 | **newsletter** | Sends a NOAN asset to every contact carrying a tag, exactly once each | — |
+| **results report** | Writes an earnings release, trading update or results call remarks from your reported figures, checks every figure against them, and saves it as an asset once a person approves | no email |
 
 Baseline for everything: a NOAN API key minted under your **NOAN agent** (an Owner
 creates the agent once under Settings → Team → Agent; its keys are under
@@ -164,6 +165,7 @@ agents/
   fact-alignment/
   market-research-refresh/  including scripts/ (the Firecrawl search and scrape helpers)
   newsletter/
+  results-report/           the worker, the figure check and the drafting call
   weekly-activity-report/
   sales-deck/               its seed script; the deck itself is Python, in design/
   shared/
@@ -232,7 +234,7 @@ nothing run — until the secrets are there.
 | Secret | Needed by |
 |---|---|
 | `NOAN_PERSONAL_API_KEY` | every agent: the **agent's** key (Settings → API → Agent API Keys), so what the agents write is theirs. |
-| `RESEND_API_KEY` | every agent |
+| `RESEND_API_KEY` | every agent except results report |
 | `ANTHROPIC_API_KEY` **or** `LLM_API_KEY` | every agent except the newsletter — either name works, see *Which model answers* |
 | `DATABASE_URL` | every agent except market research |
 | `FIRECRAWL_API_KEY` | market research |
@@ -250,7 +252,8 @@ for market research if your stack is not titled "Market Research", and the peopl
 `PARK_ASSIGNEES_SALES`, `PARK_ASSIGNEES_ENG`, `HUMAN_IDENTITIES`,
 `FACT_ALIGNMENT_REVIEW_ASSIGNEES` and `REPLY_HUMAN_ASSIGNEES`. For the newsletter:
 `NEWSLETTER_UNSUB_BASE` and `NEWSLETTER_TEST_RECIPIENT`, both required to send, and
-`NEWSLETTER_REPORT_TO` for a report after each send. Every workflow forwards them; leave one unset and that
+`NEWSLETTER_REPORT_TO` for a report after each send. For results report:
+`RESULTS_REPORT_STACKS` and `PARK_ASSIGNEES_RESULTS_REPORT`. Every workflow forwards them; leave one unset and that
 agent takes the cautious default.
 
 ### Sending a newsletter
@@ -281,6 +284,33 @@ Both check that `t` is the first 32 hex characters of
 `hmac_sha256(NEWSLETTER_UNSUB_SECRET, contact id)`, then add the `Unsubscribed` tag to
 that contact through the NOAN API. `PATCH /contacts/{id}` replaces the tag list, so
 send the existing tags with the new one.
+
+### Writing a results report
+
+The results report agent writes from the facts in your reporting stacks. Each fact opens with
+a header line naming the period, for example
+`Period: FY2026 Q3 (ended 2026-09-27) · Report type: quarterly results · Released: 2026-10-22`,
+and the first fact that carries one sets the period the document reports on.
+
+1. Run `seed-results-report.mjs` once. It writes the starter Config and Playbook and creates
+   the ledger, and prints the two block slugs to add as variables.
+2. Set `RESULTS_REPORT_STACKS` to the titles of your reporting stacks, comma-separated. The
+   agent also reads any block pinned to a reporting subtype listed in its Config, but those
+   subtypes are not in NOAN's vocabulary yet, so for now the stack titles are how it finds
+   your facts.
+3. List the words that name a metric in your business (stores, ARR, assets under management)
+   in the Config's `[[METRIC WORDS]]` section. The figure check reads a figure by the words
+   around it, and a word it does not know is no help.
+4. **Actions → results report → Run workflow** with a `report_type` such as `earnings release`
+   and `dry_run` 1. The log shows the draft and the figure check.
+
+With `dry_run` 0 it files a task with the draft as a comment. Every figure has been checked
+against your facts by value, comparison and metric before that, and a draft that fails twice
+becomes a task naming the figures instead. Comment `approve` on the task (people in
+`COMMANDERS` only) and the next run saves the draft as an asset, with the ids of the facts it
+came from in the asset's prompt. Comment `no` to drop it. When a fact the saved report came
+from changes, the scheduled run drafts it again and files a new task, and approving that adds
+a version to the same asset. The schedule runs dry until you set `DRY_RUN` to `0`.
 
 ### Scheduling meetings
 
@@ -411,6 +441,7 @@ and why, and never files the same one twice.
 | **customer support** | FAQs, Features, Products and Services | escalates most questions to a human |
 | **market research** | Company Overview, Products and Services, Features, Roadmap, FAQs, Business Model, Mission and Values, Positioning, Goals, Launches and Announcements; Ideal Customer, Customer Segments, Customer Problems, How Customers Buy, Common Objections | researches with no anchor in what you already know |
 | **sales deck** | Visual Style, Tone of Voice, Positioning, Company Overview, Ideal Customer, Customer Segments, plus your design-system block and the `## Slide design` section of the Deck Playbook | thin decks in no particular visual system |
+| **results report** | the stacks named in `RESULTS_REPORT_STACKS`; Tone of Voice and Claims We Can't Make as rules it follows | nothing to write from: the run fails and names what it could not find |
 | **activity report**, **fact alignment**, **newsletter** | your activity, the whole fact base, assets by tag | nothing to fill |
 
 Run the check by hand at any time:
