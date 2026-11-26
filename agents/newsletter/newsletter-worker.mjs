@@ -732,19 +732,19 @@ async function fileRefusalTask(cfg, { assetId, title, reason, fix }) {
     if (open) {
       await noanPatch(`/tasks/${open.id}`, { details: appendRun(open.details, line) });
       // unassign:false — the owner stays on it and the agent is not on it to drop.
-      await parkForHuman(open, { lane: "eng", agent: "newsletter", assignees, reason, unassign: false, status: null, log });
+      await parkForHuman(open, { lane: "eng", agent: "newsletter", assignees, reason, unassign: false, log });
       log(`  board: appended this run to open task ${open.id}`);
       return open.id;
     }
     const created = await noanPost("/tasks", {
       title: taskTitle,
       details: buildDetails({ what: reason, fix, line }),
-      status: "backlog",          // a park is waiting on a human; never column-less
+      status: "backlog",
       externalId: ext,
     });
     const id = created?.task?.id || created?.id;   // creates nest under the resource name
     if (!id) throw new Error("task creation returned no id");
-    const parked = await parkForHuman({ id, tags: [], assignees: [] }, { lane: "eng", agent: "newsletter", assignees, reason, status: null, log });
+    const parked = await parkForHuman({ id, tags: [], assignees: [] }, { lane: "eng", agent: "newsletter", assignees, reason, log });
     log(`  board: filed task ${id}${parked.assigned.length ? ` → ${parked.assigned.length} assignee(s) (${parked.source})` : " (UNASSIGNED)"}`);
     return id;
   } catch (e) {
@@ -780,14 +780,14 @@ async function fileReadyTask(cfg, { assetId, title, tag, count, version, weekly 
     const open = (await allTasksOnce()).find(t => t.externalId === ext && !t.completed && t.status !== "done");
     if (open) {
       await noanPatch(`/tasks/${open.id}`, { title: taskTitle, details: appendRun(open.details, line) });
-      await parkForHuman(open, { lane: "eng", agent: "newsletter", assignees, reason: what, unassign: false, status: null, log });
+      await parkForHuman(open, { lane: "eng", agent: "newsletter", assignees, reason: what, unassign: false, log });
       log(`  board: task ${open.id} is now ready-to-send`);
       return open.id;
     }
     const created = await noanPost("/tasks", { title: taskTitle, details: buildDetails({ what, fix, line }), status: "backlog", externalId: ext });
     const id = created?.task?.id || created?.id;
     if (!id) throw new Error("task creation returned no id");
-    const parked = await parkForHuman({ id, tags: [], assignees: [] }, { lane: "eng", agent: "newsletter", assignees, reason: what, status: null, log });
+    const parked = await parkForHuman({ id, tags: [], assignees: [] }, { lane: "eng", agent: "newsletter", assignees, reason: what, log });
     log(`  board: filed ready-to-send task ${id}${parked.assigned.length ? ` → ${parked.assigned.length} assignee(s)` : " (UNASSIGNED)"}`);
     return id;
   } catch (e) {

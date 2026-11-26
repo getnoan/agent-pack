@@ -52,7 +52,7 @@ import {
   parkForHuman,
   taskHasTag,
   postTaskComment,
-  unparkTask, assignResolvedOwner, companyName } from "../shared/noan.mjs";
+  unparkTask, assignResolvedOwner, companyName, backlogAndParked } from "../shared/noan.mjs";
 import { createHash } from "node:crypto";
 import { assertModelKey } from "../shared/anthropic.mjs";
 import { planQueuedTask, contactCreatePlan, warnUnregisteredTriggers } from "./command-queue.mjs";
@@ -402,7 +402,7 @@ async function executeConfirmPending({ verdict, senderEmail, state }) {
 
   // assigning the agent IS the approval — the tagged task now triggers the
   // relevant agent on its next poll
-  const page = await noanGetAll(`/tasks?status=backlog&per_page=100`);
+  const page = await backlogAndParked();
   const task = page.find(x => x.id === entry.taskId);
   if (!task) return { ok: false, why: `pending task ${entry.taskId} is no longer in the backlog` };
   await assignVerity(task);
@@ -454,7 +454,7 @@ async function escalate({ inbound, body, contact, reason, sourceTask = null }) {
     });
     const taskId = created?.task?.id || created?.id;
     // parked to the CS owner (REPLY_HUMAN_ASSIGNEES), the same person the email above went to
-    if (taskId) await parkForHuman({ id: taskId, tags: [], assignees: [] }, { lane: "cs", agent: "reply", assignees: HUMAN_ASSIGNEES, reason, status: null, log });
+    if (taskId) await parkForHuman({ id: taskId, tags: [], assignees: [] }, { lane: "cs", agent: "reply", assignees: HUMAN_ASSIGNEES, reason, log });
     if (taskId && contact) {
       try { await noanPut(`/tasks/${taskId}/contacts`, { contactIds: [contact.id] }); } catch {}
     }
@@ -889,7 +889,7 @@ async function createFollowupTasks(tasks, contact, caseId) {
         // a human's follow-up: needs-human + CS tag in one PUT, the CS owner on it
         // (REPLY_HUMAN_ASSIGNEES, else the CS lane default — never GET /me,
         // which is the key's account, not a person)
-        await parkForHuman(stub, { lane: "cs", agent: "reply", assignees: HUMAN_ASSIGNEES, extraTags: [TASK_TAG_CS], status: null, log });
+        await parkForHuman(stub, { lane: "cs", agent: "reply", assignees: HUMAN_ASSIGNEES, extraTags: [TASK_TAG_CS], log });
       } else {
         try { await addTaskTags(stub, TASK_TAG_CS); } catch {}
         if (AGENT_IDENTITY_ID) { try { await noanPut(`/tasks/${taskId}/assignees`, { assigneeIds: [AGENT_IDENTITY_ID] }); } catch {} }
@@ -1164,7 +1164,7 @@ async function scanSupportTasks(getContacts, state) {
   pruneCases(state);
   await settleExpiredCaseTasks(state);
 
-  const backlog = await noanGetAll(`/tasks?status=backlog&per_page=100`);
+  const backlog = await backlogAndParked();
 
   // Comments as the hand-back (support-scan.mjs): a teammate
   // comment addressing the agent on a support task it is NOT on clears
@@ -1207,7 +1207,7 @@ async function scanSupportTasks(getContacts, state) {
     if (DRY_RUN) { log(`  dry-run: would park ${task.id}: ${reason}`); return; }
     try { await postTaskComment(task.id, `Parked: ${reason} Then re-assign me to the task and I will open the conversation.`); }
     catch (e) { log(`  warn: park note failed: ${e.message}`); }
-    await parkForHuman(task, { lane: "cs", agent: "reply", assignees: HUMAN_ASSIGNEES, reason, status: null, log });
+    await parkForHuman(task, { lane: "cs", agent: "reply", assignees: HUMAN_ASSIGNEES, reason, log });
     await escalate({
       inbound: { id: `task:${task.id}:${new Date().toISOString().slice(0, 10)}:${createHash("sha256").update(reason).digest("hex").slice(0, 12)}`, from: "(support task)", subject: task.title },
       body: task.details || "", contact, reason, sourceTask: task,
@@ -1396,7 +1396,7 @@ const GENERAL_ASK_RX = /\[VG-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0
 
 async function handleGeneralAskReply({ meta, body, senderEmail, taskId, mark }) {
   let task = null, status = null;
-  for (const st of ["in-progress", "backlog", "done"]) {
+  for (const st of ["in-progress", "backlog", "null", "done"]) {
     const r = await noanGet(`/tasks?status=${st}&per_page=100`);
     task = (r.items || []).find(t => t.id === taskId);
     if (task) { status = st; break; }
