@@ -287,17 +287,19 @@ send the existing tags with the new one.
 
 ### Writing a results report
 
-The results report agent writes from the facts in your reporting stacks. Each fact opens with
-a header line naming the period, for example
-`Period: FY2026 Q3 (ended 2026-09-27) · Report type: quarterly results · Released: 2026-10-22`,
-and the first fact that carries one sets the period the document reports on.
+The results report agent writes from the facts in blocks pinned to the reporting subtypes its
+Config lists (reporting period, results summary, income statement and the rest). A line such as
+`Period: FY2026 Q3 (ended 2026-09-27)` in a reporting fact, usually the reporting period fact,
+sets the period the document reports on.
 
 1. Run `seed-results-report.mjs` once. It writes the starter Config and Playbook and creates
    the ledger, and prints the two block slugs to add as variables.
-2. Set `RESULTS_REPORT_STACKS` to the titles of your reporting stacks, comma-separated. The
-   agent also reads any block pinned to a reporting subtype listed in its Config, but those
-   subtypes are not in NOAN's vocabulary yet, so for now the stack titles are how it finds
-   your facts.
+2. Put each kind of reporting fact in a block pinned to its subtype, in a stack such as
+   Financial Results: `POST /stacks/{stackId}/blocks` with `subtype`, or create the stack with
+   its blocks in one `POST /stacks`. A block's subtype is set only when it is created, so for
+   older unpinned reporting blocks either post their facts into new pinned blocks or set
+   `RESULTS_REPORT_STACKS` to the titles of their stacks, comma-separated. Each subtype's write
+   guide (`get_fact_guide` on the NOAN MCP server) says how its fact should read.
 3. List the words that name a metric in your business (stores, ARR, assets under management)
    in the Config's `[[METRIC WORDS]]` section. The figure check reads a figure by the words
    around it, and a word it does not know is no help.
@@ -441,7 +443,7 @@ and why, and never files the same one twice.
 | **customer support** | FAQs, Features, Products and Services | escalates most questions to a human |
 | **market research** | Company Overview, Products and Services, Features, Roadmap, FAQs, Business Model, Mission and Values, Positioning, Goals, Launches and Announcements; Ideal Customer, Customer Segments, Customer Problems, How Customers Buy, Common Objections | researches with no anchor in what you already know |
 | **sales deck** | Visual Style, Tone of Voice, Positioning, Company Overview, Ideal Customer, Customer Segments, plus your design-system block and the `## Slide design` section of the Deck Playbook | thin decks in no particular visual system |
-| **results report** | the stacks named in `RESULTS_REPORT_STACKS`; Tone of Voice and Claims We Can't Make as rules it follows | nothing to write from: the run fails and names what it could not find |
+| **results report** | blocks pinned to the reporting subtypes in its Config, or the stacks named in `RESULTS_REPORT_STACKS`; Tone of Voice and Claims We Can't Make as rules it follows | nothing to write from: the run fails and names what it could not find |
 | **activity report**, **fact alignment**, **newsletter** | your activity, the whole fact base, assets by tag | nothing to fill |
 
 Run the check by hand at any time:
