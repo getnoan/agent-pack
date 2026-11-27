@@ -98,7 +98,7 @@ const APPROVE_HOW = `To save it as an asset, comment \`approve\` on this task (c
 
 async function fileTask({ externalId, title, details, reason }) {
   const { id, created } = await createTaskOnce({ title, details, status: "backlog", externalId }, { log });
-  if (created) await parkForHuman({ id, tags: [], assignees: [] }, { lane: "eng", agent: AGENT, reason, status: null, log });
+  if (created) await parkForHuman({ id, tags: [], assignees: [] }, { lane: "eng", agent: AGENT, reason, log });
   return { id, created };
 }
 
@@ -214,13 +214,14 @@ async function readVerdicts(state, current) {
       redraft.push({ key, type: report.type, reason: `Redrafted because ${moved.length} source fact(s) changed while the last draft waited for approval.` });
       continue;
     }
+    const saved = report.assetId ? "a new version of asset" : "asset";
     report.assetId = await saveAsset(report);
     report.blockFacts = p.blockFacts;
     report.savedHash = factsHash(p.blockFacts);
     report.savedAt = new Date().toISOString();
     delete report.pending;
     commit(state);
-    await closeTask(p.taskId, `Saved on ${verdict.by}'s approval as asset ${report.assetId}.`);
+    await closeTask(p.taskId, `Saved on ${verdict.by}'s approval as ${saved} ${report.assetId}.`);
   }
   return redraft;
 }

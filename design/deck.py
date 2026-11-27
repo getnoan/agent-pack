@@ -510,7 +510,7 @@ def mark_task_done(cfg, task_id):
 # human forwarding the PDF by hand. The task is parked the way
 # the rest of the fleet parks (general-worker's flagForHuman, demo-worker's
 # reach refusal): needs-human tag + the agent unassigned + the reason in the
-# details, status left in backlog. Unassignment is what stops the scanner
+# details, no status (the board's Needs Human column). Unassignment is what stops the scanner
 # rebuilding it every run; re-assigning the agent is the hand-back, and the [Note]
 # a human adds first rides into the next build through the task details.
 
@@ -797,9 +797,7 @@ def park_task(cfg, task, reason, deck_ref, as_is=None, review_email=True):
     if details is None:
         log(f"  ! details already at the {TASK_DETAILS_CAP}-char cap — park note not written")
     else:
-        # status backlog explicitly: the fleet's park state, and where the
-        # scanner's predicate looks for a re-assigned task.
-        st, data = http("PATCH", f"{base}/tasks/{tid}", h, {"details": details, "status": "backlog"})
+        st, data = http("PATCH", f"{base}/tasks/{tid}", h, {"details": details})
         if not (200 <= st < 300):
             log(f"  ! park note not written ({st}): {json.dumps(data)[:150]}")
     tag_id = find_tag_id(cfg, PARK_TAG)
@@ -808,6 +806,11 @@ def park_task(cfg, task, reason, deck_ref, as_is=None, review_email=True):
         st, data = http("PUT", f"{base}/tasks/{tid}/tags", h, {"tagIds": sorted(ids)})
         if not (200 <= st < 300):
             log(f"  ! {PARK_TAG} tag not applied ({st}): {json.dumps(data)[:150]}")
+        else:
+            # The scanner reads a task with no status only when it carries the tag.
+            st, data = http("PATCH", f"{base}/tasks/{tid}", h, {"status": None})
+            if not (200 <= st < 300):
+                log(f"  ! not moved to the Needs Human column ({st}): {json.dumps(data)[:150]}")
     else:
         log(f"  ! tag '{PARK_TAG}' not found in NOAN — parked task carries no tag")
     verity = set(agent_identity_ids(cfg))
@@ -839,6 +842,11 @@ def park_task(cfg, task, reason, deck_ref, as_is=None, review_email=True):
     return True
 
 
+def in_needs_human_column(task):
+    """The board shows a needs-human task with no status in its Needs Human column."""
+    return not task.get("status") and any((t.get("name") or "").lower() == PARK_TAG for t in task.get("tags") or [])
+
+
 def clear_park_tag(cfg, task):
     """A human re-assigned the agent on a parked task: drop needs-human so the
     board stops showing it as waiting on a person. Returns True if it changed."""
@@ -846,6 +854,11 @@ def clear_park_tag(cfg, task):
     keep = [t.get("id") for t in tags if t.get("id") and (t.get("name") or "").lower() != PARK_TAG]
     if len(keep) == len(tags):
         return False
+    if not task.get("status"):
+        st, data = http("PATCH", f"{cfg['noan_base']}/tasks/{task['id']}", noan_headers(cfg), {"status": "backlog"})
+        if not (200 <= st < 300):
+            log(f"  ! could not move the task to backlog ({st}): {json.dumps(data)[:150]}")
+            return False
     st, data = http("PUT", f"{cfg['noan_base']}/tasks/{task['id']}/tags", noan_headers(cfg), {"tagIds": keep})
     if 200 <= st < 300:
         log(f"  hand-back: {PARK_TAG} cleared ({agent_name(cfg)} re-assigned by a human)")
@@ -2282,7 +2295,7 @@ def main():
             if st != 200 or not data:
                 break
             for t in data.get("items", []):
-                if t.get("status") != "backlog" or t.get("completed"):
+                if (t.get("status") != "backlog" and not in_needs_human_column(t)) or t.get("completed"):
                     continue
                 backlog.append(t)
                 # A re-engagement deck is the reply lane's until it parks: from

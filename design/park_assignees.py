@@ -7,7 +7,7 @@ Node lanes — the shape agents/comment-grammar.json already uses for the
 comment verbs.
 
 Why this exists: deck.py's park_task tagged
-needs-human, moved the task to backlog and wrote `assignees = existing minus
+needs-human and wrote `assignees = existing minus
 the agent`. It added NO human. On a task the agent alone held — which is every task
 the deck agent is working — that is the empty set, so a guard-tripped deck
 parked to nobody: the exact "handed to nobody" shape the board sweep escalates

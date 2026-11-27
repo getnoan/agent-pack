@@ -841,10 +841,10 @@ const agentName = () => defaultAgentName();
 
 /** One task by id, or null. There is no GET /tasks/{id}: page the status
  *  lists, in-progress first (where a worker's own task usually is), then
- *  backlog, then done. Each list is swept whole, so a task past the first
+ *  backlog, then no status, then done. Each list is swept whole, so a task past the first
  *  page of `done` is still found. */
 export async function findTaskById(taskId) {
-  for (const st of ["in-progress", "backlog", "done"]) {
+  for (const st of ["in-progress", "backlog", "null", "done"]) {
     const rows = await noanGetAll(`/tasks?per_page=100&status=${st}`);
     const hit = rows.find(t => t.id === taskId);
     if (hit) return hit;
@@ -897,7 +897,7 @@ export async function appendTaskNote(taskId, text, { author = agentName() } = {}
   if (!task) throw new Error(`task ${taskId} not found`);
   const prior = task.details || "";
   const r = await appendTaskDetails(task, text, { author });
-  const verify = await noanGetAll(`/tasks?per_page=100&status=${task.status || "backlog"}`);
+  const verify = await noanGetAll(`/tasks?per_page=100&status=${task.status || "null"}`);
   const after = verify.find(t => t.id === taskId);
   if (after && prior && !(after.details || "").includes(prior.slice(0, 120))) {
     throw new Error(`task ${taskId} description verify failed — the brief's head is missing after append`);
@@ -1033,7 +1033,8 @@ export async function unassignVerity(task) {
 /* ---------------- parking a task for a human ----------------
  *
  * "Parked" is the fleet's hand-back state: the task carries `needs-human`,
- * the agent is off the assignees, and re-assigning it is the retry.
+ * has no status (the board's Needs Human column), the agent is off the
+ * assignees, and re-assigning it is the retry.
  *
  * parkForHuman() is the one place the park is written (a test upstream fails
  * CI on a raw needs-human write elsewhere) and it ALWAYS leaves a human on
@@ -1068,19 +1069,36 @@ export const PARK_TAG = "needs-human";
 
 export const PARK_LANES = ["cs", "sales", "eng"];
 
-/** The inverse of the tag half of parkForHuman: drop needs-human from a task
- *  that is being worked again (a human re-assigned the agent, or a comment
- *  re-armed it). PUT replaces the set, so the remainder is written from the
+/** The inverse of parkForHuman's tag and status writes: move a task with no
+ *  status to backlog and drop needs-human from a task that is being worked
+ *  again (a human re-assigned the agent, or a comment re-armed it). PUT replaces the set, so the remainder is written from the
  *  task object in hand — pass one from this poll's list read, the only view
  *  of the current set (there is no GET /tasks/{id}). No-op when the tag is
  *  not there. Mutates task.tags to match, so a later merge in the same poll
  *  does not re-add it from a stale copy. Returns true when a PUT was made. */
 export async function unparkTask(task) {
   if (!taskHasTag(task, PARK_TAG)) return false;
+  if (!task.status) {
+    await noanPatch(`/tasks/${task.id}`, { status: "backlog" });
+    task.status = "backlog";
+  }
   const keep = (task.tags || []).filter(t => String(t.name || "").toLowerCase() !== PARK_TAG);
   await noanPut(`/tasks/${task.id}/tags`, { tagIds: keep.map(t => t.id) });
   task.tags = keep;
   return true;
+}
+
+/** The board shows a needs-human task with no status in its Needs Human column. */
+export function inNeedsHumanColumn(task) {
+  return !task?.status && taskHasTag(task, PARK_TAG);
+}
+
+export async function parkedTasks({ getAll = noanGetAll } = {}) {
+  return (await tasksTagged(PARK_TAG, { status: "null", getAll })).filter(inNeedsHumanColumn);
+}
+
+export async function backlogAndParked({ getAll = noanGetAll } = {}) {
+  return [...await getAll(`/tasks?status=backlog&per_page=100`), ...await parkedTasks({ getAll })];
 }
 
 function parseIdList(v) {
@@ -1163,8 +1181,9 @@ export function resolveParkAssignees({ lane, agent, requesterEmail = null, assig
 }
 
 /**
- * Park `task` for a human. Merges `needs-human` onto its tags, optionally
- * moves it to `status`, then writes the assignee set ONCE: the humans already
+ * Park `task` for a human. Merges `needs-human` onto its tags, clears its
+ * status so the board shows it in the Needs Human column, then writes the
+ * assignee set ONCE: the humans already
  * on it, minus every agent identity when `unassign` is true, plus the human
  * resolved above. Pass a task object from a list read or a create — PUT
  * replaces the set and there is no GET /tasks/{id}, so `task.tags` and
@@ -1179,14 +1198,14 @@ export function resolveParkAssignees({ lane, agent, requesterEmail = null, assig
  * also needs its lane tag ("customer success") must not make two merge
  * calls from a stale `tags: []`, because the second would drop the first.
  *
- * Returns { tagged, status, assigned: [ids], source, errors: [] }. Never
+ * Returns { tagged, moved, assigned: [ids], source, errors: [] }. Never
  * throws. `dryRun` resolves and logs, writes nothing.
  */
 export async function parkForHuman(task, {
   lane = null, agent = null, reason = "", requesterEmail = null, assignees = null,
-  unassign = true, status = "backlog", extraTags = [], dryRun = false, log = console.log,
+  unassign = true, extraTags = [], dryRun = false, log = console.log,
 } = {}) {
-  const out = { tagged: false, status: null, assigned: [], source: "none", notifiedSlack: false, errors: [] };
+  const out = { tagged: false, moved: false, assigned: [], source: "none", notifiedSlack: false, errors: [] };
   if (!task?.id) { out.errors.push("no task id"); return out; }
   const who = resolveParkAssignees({ lane, agent, requesterEmail, assignees });
   out.source = who.source;
@@ -1195,22 +1214,15 @@ export async function parkForHuman(task, {
   }
   const label = `${agent || lane || "park"}`;
   if (dryRun) {
-    log(`  dry-run: would park ${task.id} needs-human${status || !task.status ? ` → ${status || "backlog"}` : ""}, ${unassign ? `${defaultAgentName()} unassigned, ` : ""}assign ${who.ids.join(",") || "nobody"} (${who.source})${reason ? ` — ${String(reason).slice(0, 120)}` : ""}`);
+    log(`  dry-run: would park ${task.id} needs-human → Needs Human column, ${unassign ? `${defaultAgentName()} unassigned, ` : ""}assign ${who.ids.join(",") || "nobody"} (${who.source})${reason ? ` — ${String(reason).slice(0, 120)}` : ""}`);
     return out;
   }
   try { await addTaskTags(task, PARK_TAG, ...extraTags); out.tagged = true; }
   catch (e) { out.errors.push(`tag: ${e.message}`); log(`  warn: [${label}] could not tag needs-human on ${task.id}: ${e.message}`); }
-  /* `status: null` from a caller means "leave it where it is" - a wound-down
-   * in-progress task should stay in-progress, not slide back to backlog.
-   *
-   * But a park is waiting on a human, and a task with no status means
-   * waiting on nobody. So parking a task that is in no column puts it in
-   * backlog, or the park is invisible to every ?status= query, including the
-   * board sweep that finds neglected parks. */
-  const wanted = status || (task.status ? null : "backlog");
-  if (wanted) {
-    try { await noanPatch(`/tasks/${task.id}`, { status: wanted }); out.status = wanted; }
-    catch (e) { out.errors.push(`status: ${e.message}`); log(`  warn: [${label}] could not move ${task.id} to ${wanted}: ${e.message}`); }
+  // A task with no status and no needs-human tag is read by no worker, so the move waits for the tag.
+  if (out.tagged && task.status !== null) {
+    try { await noanPatch(`/tasks/${task.id}`, { status: null }); out.moved = true; task.status = null; }
+    catch (e) { out.errors.push(`status: ${e.message}`); log(`  warn: [${label}] could not move ${task.id} to the Needs Human column: ${e.message}`); }
   }
   const verity = new Set(verityIds());
   const keep = (task.assignees || []).map(a => a.id).filter(id => id && (!unassign || !verity.has(id)));
@@ -1741,7 +1753,7 @@ export function taskDueNow(task, now = new Date()) {
  * that are due now. Oldest dueDate first so overdue tasks can't starve behind the cap.
  */
 export async function listBacklogTasks({ tagName = "follow-up", limit = 3 } = {}) {
-  const all = await noanGetAll(`/tasks?status=backlog&per_page=100`);
+  const all = await backlogAndParked();
   const triggered = all.filter(t => taskTriggers(t, tagName));   // taskTriggers also drops completed tasks
   const due = triggered.filter(t => taskDueNow(t));
   const waiting = triggered.length - due.length;

@@ -54,7 +54,7 @@ These are hard gates in code, not model judgement. **The model never decides whe
 
 The task moves to done only once the deck actually reached the customer.
 
-A deck routed to review is **parked**, not closed: the task stays in backlog tagged for a human, the agent unassigns itself, and a dated line is appended to the details with the reason and where the stored copy lives. The PDF is kept at park time so a later send ships exactly the file the human saw.
+A deck routed to review is **parked**, not closed: the task moves to the board's Needs Human column tagged for a human, the agent unassigns itself, and a dated line is appended to the details with the reason and where the stored copy lives. The PDF is kept at park time so a later send ships exactly the file the human saw.
 
 Three ways back, all from the board:
 - a comment of **send** ships the stored deck as-is with the cover note the review email showed; **send: <text>** uses those words instead;

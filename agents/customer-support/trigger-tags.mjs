@@ -96,14 +96,14 @@ export const GATE_VARS = [...new Set(TRIGGER_TAG_REGISTRY.map(e => e.gate).filte
  * a stamp line in the task's details, read back by site-preview-fulfil-worker
  * and by the page itself. The investor-portal flow uses the same machinery.
  * Nobody is owed anything on such a task until a stamp line says so, and its
- * resting state is no status and no assignee.
+ * resting state is backlog with no assignee.
  *
  * "Assigned, no trigger tag" is the general lane's own trigger, so an assigned
  * record would be claimed and routed to Site Build, which nobody asked for.
  * "Site Preview" is deliberately NOT a registry entry (no worker polls it), so
  * this predicate is the one shared answer to "is this a job?", used by the belt
  * (never claim), the route and retag tools (never apply a trigger tag), and the
- * board sweep (never a dropped assignment, never an "open with no status" defect).
+ * board sweep (never a dropped assignment).
  *
  * A PARKED record (needs-human) is a person's work again — a concierge claim
  * waiting on a person. The predicate still says "record"; a caller that must

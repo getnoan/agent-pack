@@ -150,6 +150,7 @@ const saved = run();
 ok("the run finishes", saved.status === 0, saved.out.slice(-800));
 const asset = world().assets[0];
 ok("one asset is created", world().assets.length === 1 && posted(saved, "POST", /^\/v1\/assets$/).length === 1);
+ok("…and the task says it saved the asset", world().tasks.find(t => t.id === approval.id)?.comments.some(c => /approval as asset asset-/.test(c.content)));
 ok("…its createPrompt names every source fact", /fact f-head-1 \(block b-head\)/.test(asset?.versions[0].createPrompt) && /fact f-cash-1/.test(asset?.versions[0].createPrompt));
 ok("…and the task is closed done", world().tasks.find(t => t.id === approval.id)?.status === "done");
 
@@ -164,6 +165,7 @@ comment(second.id, "approve");
 const versioned = run();
 ok("on approval it posts a version, not a second asset",
    world().assets.length === 1 && world().assets[0].versions.length === 2 && posted(versioned, "POST", /^\/v1\/assets$/).length === 0, versioned.out.slice(-800));
+ok("…and says it saved a new version", world().tasks.find(t => t.id === second.id)?.comments.some(c => /as a new version of asset asset-/.test(c.content)));
 
 edit(w => w.facts["b-tone"].push({ id: "f-tone-2", content: "Drier still. TONE-MARKER" }));
 ok("a change to a rule fact is not a restatement", run().model === 0);
