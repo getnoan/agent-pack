@@ -135,9 +135,12 @@ sentence what you did.
    Show the person the report. A first run says it has no earlier week to compare
    against; that is expected.
 7. **Send for real, only when asked.** The person needs a [Resend](https://resend.com)
-   key and a domain verified there; set `RESEND_API_KEY` and a `MAIL_FROM` on that
-   domain. They put a NOAN tag (for example `Weekly Report`) on their own contact; set
-   `REPORT_RECIPIENT_TAG` to its name. Then run step 6 with `DRY_RUN=0` in front.
+   key; set `RESEND_API_KEY`. To send only to themselves, they need no domain: set
+   `MAIL_FROM=Weekly Report <onboarding@resend.dev>`, which Resend delivers only to the
+   address their Resend account was created with. To send to anyone else, they verify a
+   domain in Resend and set `MAIL_FROM` to an address on it. They put a NOAN tag (for
+   example `Weekly Report`) on each recipient's contact; set `REPORT_RECIPIENT_TAG` to its
+   name. Then run step 6 with `DRY_RUN=0` in front.
 8. **Finish** by telling them: the report is saved as a note and emailed to the tagged
    contacts; editing the two facts in the Agent Config stack changes the next run; and
    *Running it on GitHub Actions* below makes it weekly, with a Postgres database
